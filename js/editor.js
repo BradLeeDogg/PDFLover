@@ -54,6 +54,7 @@ let renderSeq = 0;          // guards against stale async page renders
 let renderTask = null;      // active pdf.js render task for the main canvas
 let thumbSeq = 0;
 let editingId = null;       // text object currently being edited
+let whiteoutWarned = false; // one-time whiteout privacy note per session
 let drag = null;            // active pointer interaction
 let propSnap = null;        // pending undo snapshot for slider-style edits
 const imageCache = new Map();      // dataUrl -> HTMLImageElement
@@ -169,6 +170,7 @@ async function addSource(bytes) {
   if (doc.isPureXfa) {
     alert("This PDF is an XFA form (LiveCycle). XFA forms are not fully supported — pages may render incompletely.");
   } else if (unsupported) {
+    toast("Protected PDF: exports will contain rendered page images. Fills and edits still work.", { ms: 7000 });
     setStatus("Protected PDF: exports will contain rendered page images (fills and edits still work)");
   }
   return s;
@@ -252,6 +254,7 @@ function pushSnap(snap) {
   state.redoStack = [];
   state.dirty = true;
   updateUndoButtons();
+  scheduleAutosave();
 }
 
 function pushUndo() { pushSnap(snapshot()); }
@@ -767,6 +770,10 @@ overlayCanvas.addEventListener("pointerup", () => {
       pushSnap(drag.snap);
       state.selId = o.id;
       setTool("select");
+      if (o.type === "whiteout" && page.src && !state.sources[page.src.s].unsupported && !whiteoutWarned) {
+        whiteoutWarned = true;
+        toast("Heads-up: whiteout hides content visually, but the text underneath stays recoverable in the exported PDF. Don't rely on it for sensitive data.", { ms: 9000 });
+      }
     }
   } else if (drag.mode === "drawing") {
     if (o.points.length < 2) page.objects.pop();
@@ -1049,10 +1056,13 @@ function deleteCurrentPage() {
 }
 
 function moveCurrentPage(delta) {
-  const to = state.current + delta;
-  if (to < 0 || to >= state.pages.length) return;
+  movePageTo(state.current, state.current + delta);
+}
+
+function movePageTo(from, to) {
+  if (from === to || from < 0 || to < 0 || from >= state.pages.length || to >= state.pages.length) return;
   pushUndo();
-  const [pg] = state.pages.splice(state.current, 1);
+  const [pg] = state.pages.splice(from, 1);
   state.pages.splice(to, 0, pg);
   state.current = to;
   refreshAll();
@@ -1092,6 +1102,31 @@ async function rebuildThumbs() {
     div.appendChild(cv);
     div.appendChild(num);
     div.addEventListener("click", () => gotoPage(parseInt(div.dataset.index, 10)));
+
+    // Drag to reorder pages.
+    div.draggable = true;
+    div.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/pdflover-page", String(i));
+      e.dataTransfer.effectAllowed = "move";
+      div.classList.add("dragging");
+    });
+    div.addEventListener("dragend", () => div.classList.remove("dragging"));
+    div.addEventListener("dragover", (e) => {
+      if ([...e.dataTransfer.types].includes("text/pdflover-page")) {
+        e.preventDefault();
+        div.classList.add("drag-over");
+      }
+    });
+    div.addEventListener("dragleave", () => div.classList.remove("drag-over"));
+    div.addEventListener("drop", (e) => {
+      const from = e.dataTransfer.getData("text/pdflover-page");
+      if (from === "") return;
+      e.preventDefault();
+      e.stopPropagation();
+      div.classList.remove("drag-over");
+      movePageTo(parseInt(from, 10), parseInt(div.dataset.index, 10));
+    });
+
     holder.appendChild(div);
     return { page, cv };
   });
@@ -1423,10 +1458,13 @@ async function exportPdf() {
     const name = ($("docName").value.trim() || "document") + ".pdf";
     downloadBytes(bytes, name, "application/pdf");
     state.dirty = false;
+    scheduleAutosave();
     setStatus(`Exported ${name} (${state.pages.length} page(s))`);
+    toast(`Exported ${name}`);
   } catch (e) {
     console.error(e);
     setStatus("Export failed: " + e.message, true);
+    toast("Export failed: " + e.message, { error: true });
   }
 }
 
@@ -1569,24 +1607,12 @@ function setTool(tool) {
   updatePropsPanel();
 }
 
-async function placeImageFile(file) {
+async function placeImageDataUrl(dataUrl, fmt, maxFrac = 0.5) {
   const page = curPage();
-  if (!page || !file) return;
-  let dataUrl = await readFileAsDataURL(file);
-  let fmt = file.type === "image/jpeg" ? "jpeg" : "png";
-  if (file.type !== "image/png" && file.type !== "image/jpeg") {
-    // Normalize other formats (e.g. WebP) to PNG for pdf-lib.
-    const img = await loadImageFromDataURL(dataUrl);
-    const cv = document.createElement("canvas");
-    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
-    cv.getContext("2d").drawImage(img, 0, 0);
-    dataUrl = cv.toDataURL("image/png");
-    fmt = "png";
-  }
+  if (!page) return;
   const img = await loadImageFromDataURL(dataUrl);
   const { w: pw, h: ph } = displayDims(page);
-  const maxW = pw * 0.5;
-  const scale = Math.min(1, maxW / img.naturalWidth, (ph * 0.5) / img.naturalHeight);
+  const scale = Math.min(1, (pw * maxFrac) / img.naturalWidth, (ph * maxFrac) / img.naturalHeight);
   const w = img.naturalWidth * scale;
   const h = img.naturalHeight * scale;
   pushUndo();
@@ -1599,6 +1625,22 @@ async function placeImageFile(file) {
   setTool("select");
   renderOverlay();
   scheduleThumb();
+}
+
+async function placeImageFile(file) {
+  if (!file) return;
+  let dataUrl = await readFileAsDataURL(file);
+  let fmt = file.type === "image/jpeg" ? "jpeg" : "png";
+  if (file.type !== "image/png" && file.type !== "image/jpeg") {
+    // Normalize other formats (e.g. WebP) to PNG for pdf-lib.
+    const img = await loadImageFromDataURL(dataUrl);
+    const cv = document.createElement("canvas");
+    cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+    cv.getContext("2d").drawImage(img, 0, 0);
+    dataUrl = cv.toDataURL("image/png");
+    fmt = "png";
+  }
+  await placeImageDataUrl(dataUrl, fmt);
 }
 
 // ----------------------------------------------------------------- zoom ----
@@ -1626,6 +1668,297 @@ function setStatus(msg, isError) {
   el.style.color = isError ? "#ff8598" : "";
   clearTimeout(statusTimer);
   statusTimer = setTimeout(() => { el.textContent = ""; }, 6000);
+}
+
+/** Prominent, self-dismissing notification. Returns the element so callers
+    can append action buttons; pass ms: 0 to keep it until dismissed. */
+function toast(msg, opts = {}) {
+  const t = document.createElement("div");
+  t.className = "toast" + (opts.error ? " err" : "");
+  const span = document.createElement("span");
+  span.textContent = msg;
+  t.appendChild(span);
+  $("toasts").appendChild(t);
+  if (opts.ms !== 0) {
+    setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 400); }, opts.ms || 4500);
+  }
+  return t;
+}
+
+// ------------------------------------------------------------- autosave ----
+
+let autosaveTimer = null;
+
+function idbOp(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("pdflover", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("session");
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction("session", mode);
+      const r = fn(tx.objectStore("session"));
+      tx.oncomplete = () => { db.close(); resolve(r && r.result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(saveSession, 1500);
+}
+
+async function saveSession() {
+  try {
+    await idbOp("readwrite", (s) => s.put({
+      when: Date.now(),
+      dirty: state.dirty,
+      docName: $("docName").value,
+      current: state.current,
+      pages: JSON.parse(JSON.stringify(state.pages)),
+      formValues: { ...state.formValues },
+      sources: state.sources.map((src) => src.bytes),
+    }, "current"));
+  } catch (e) {
+    console.warn("Autosave failed:", e.message);
+  }
+}
+
+async function tryOfferRestore() {
+  let data = null;
+  try { data = await idbOp("readonly", (s) => s.get("current")); } catch (e) { return; }
+  if (!data || !data.dirty || !data.pages || !data.pages.length) return;
+  const t = toast(`Found unsaved work ("${data.docName}", ${new Date(data.when).toLocaleString()}).`, { ms: 0 });
+  const restore = document.createElement("button");
+  restore.textContent = "Restore";
+  const discard = document.createElement("button");
+  discard.textContent = "Discard";
+  discard.className = "ghost";
+  t.appendChild(restore);
+  t.appendChild(discard);
+  const close = () => { t.classList.add("out"); setTimeout(() => t.remove(), 400); };
+  restore.addEventListener("click", async () => { close(); await restoreSession(data); });
+  discard.addEventListener("click", async () => {
+    close();
+    try { await idbOp("readwrite", (s) => s.delete("current")); } catch (e) { /* ignore */ }
+  });
+}
+
+async function restoreSession(data) {
+  try {
+    state.sources = [];
+    state.formValues = {};
+    imageCache.clear();
+    for (const bytes of data.sources) await addSource(new Uint8Array(bytes));
+    state.pages = data.pages;
+    if (data.formValues) state.formValues = data.formValues;
+    state.current = clamp(data.current || 0, 0, state.pages.length - 1);
+    state.undoStack = [];
+    state.redoStack = [];
+    state.selId = null;
+    state.dirty = true;
+    $("docName").value = data.docName || "restored";
+    refreshAll();
+    toast("Session restored");
+    scheduleAutosave();
+  } catch (e) {
+    console.error(e);
+    toast("Could not restore session: " + e.message, { error: true });
+  }
+}
+
+// ------------------------------------------------------------ drag&drop ----
+
+function isFreshDoc() {
+  return state.sources.length === 0 && state.pages.length === 1 &&
+         state.pages[0].objects.length === 0 && !state.dirty;
+}
+
+function wireDragDrop() {
+  let depth = 0;
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("dragenter", (e) => {
+    if ([...(e.dataTransfer ? e.dataTransfer.types : [])].includes("Files")) {
+      depth++;
+      document.body.classList.add("dropping");
+    }
+  });
+  window.addEventListener("dragleave", () => {
+    if (--depth <= 0) { depth = 0; document.body.classList.remove("dropping"); }
+  });
+  window.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    depth = 0;
+    document.body.classList.remove("dropping");
+    const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
+    if (!files.length) return;   // internal drags (page thumbnails)
+    const pdfs = files.filter((f) => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    const imgs = files.filter((f) => /^image\//.test(f.type));
+    try {
+      let rest = pdfs;
+      if (pdfs.length && isFreshDoc()) {
+        const bytes = new Uint8Array(await readFileAsArrayBuffer(pdfs[0]));
+        await openPdfBytes(bytes, pdfs[0].name);
+        toast(`Opened ${pdfs[0].name}`);
+        rest = pdfs.slice(1);
+      }
+      for (const f of rest) {
+        await insertPdfBytes(new Uint8Array(await readFileAsArrayBuffer(f)));
+        toast(`Appended pages from ${f.name}`);
+      }
+      for (const f of imgs) await placeImageFile(f);
+      if (imgs.length) toast(`Placed ${imgs.length} image(s) — drag to position`);
+    } catch (err) {
+      console.error(err);
+      toast("Could not open dropped file: " + err.message, { error: true });
+    }
+  });
+}
+
+// ----------------------------------------------------------- signatures ----
+
+const SIG_STORE_KEY = "pdflover.signatures";
+
+function loadSignatures() {
+  try { return JSON.parse(localStorage.getItem(SIG_STORE_KEY)) || []; } catch (e) { return []; }
+}
+
+function storeSignature(dataUrl) {
+  try {
+    const sigs = loadSignatures().filter((s) => s !== dataUrl);
+    sigs.unshift(dataUrl);
+    localStorage.setItem(SIG_STORE_KEY, JSON.stringify(sigs.slice(0, 5)));
+  } catch (e) { /* storage full — placing still works */ }
+}
+
+/** Crop a canvas to its inked bounding box; null if empty. */
+function trimCanvasToDataUrl(cv) {
+  const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+  let minX = cv.width, minY = cv.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < cv.height; y++) {
+    for (let x = 0; x < cv.width; x++) {
+      if (d[(y * cv.width + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  const pad = 6;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(cv.width - 1, maxX + pad); maxY = Math.min(cv.height - 1, maxY + pad);
+  const out = document.createElement("canvas");
+  out.width = maxX - minX + 1;
+  out.height = maxY - minY + 1;
+  out.getContext("2d").drawImage(cv, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
+  return out.toDataURL("image/png");
+}
+
+function renderSavedSigs() {
+  const sigs = loadSignatures();
+  $("sigSavedWrap").classList.toggle("hidden", !sigs.length);
+  const holder = $("sigSaved");
+  holder.innerHTML = "";
+  sigs.forEach((s, i) => {
+    const item = document.createElement("div");
+    item.className = "sig-item";
+    const img = document.createElement("img");
+    img.src = s;
+    item.appendChild(img);
+    const del = document.createElement("button");
+    del.className = "sig-del";
+    del.textContent = "✕";
+    del.title = "Delete saved signature";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const arr = loadSignatures();
+      arr.splice(i, 1);
+      try { localStorage.setItem(SIG_STORE_KEY, JSON.stringify(arr)); } catch (err) { /* ignore */ }
+      renderSavedSigs();
+    });
+    item.appendChild(del);
+    item.addEventListener("click", async () => {
+      $("sigModal").classList.add("hidden");
+      await placeImageDataUrl(s, "png", 0.3);
+    });
+    holder.appendChild(item);
+  });
+}
+
+function wireSignatures() {
+  const cv = $("sigCanvas");
+  const ctx = cv.getContext("2d");
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "#101a5a";
+  let drawing = false, last = null;
+  const pos = (e) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+  };
+  cv.addEventListener("pointerdown", (e) => { drawing = true; last = pos(e); cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p;
+  });
+  cv.addEventListener("pointerup", () => { drawing = false; });
+  $("sigClear").addEventListener("click", () => ctx.clearRect(0, 0, cv.width, cv.height));
+
+  document.querySelectorAll(".sig-tab").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".sig-tab").forEach((x) => x.classList.toggle("active", x === b));
+    for (const id of ["sigDraw", "sigType", "sigUpload"]) $(id).classList.toggle("hidden", id !== b.dataset.sigtab);
+  }));
+
+  const pv = $("sigTypePreview");
+  const pctx = pv.getContext("2d");
+  const renderTyped = () => {
+    pctx.clearRect(0, 0, pv.width, pv.height);
+    pctx.fillStyle = "#101a5a";
+    pctx.font = 'italic 54px "Segoe Script", "Brush Script MT", "Snell Roundhand", cursive';
+    pctx.textBaseline = "middle";
+    pctx.fillText($("sigText").value, 16, pv.height / 2);
+  };
+  $("sigText").addEventListener("input", renderTyped);
+
+  $("btnSign").addEventListener("click", () => {
+    renderSavedSigs();
+    $("sigModal").classList.remove("hidden");
+  });
+
+  $("sigPlace").addEventListener("click", async () => {
+    const active = document.querySelector(".sig-tab.active").dataset.sigtab;
+    let dataUrl = null;
+    if (active === "sigDraw") {
+      dataUrl = trimCanvasToDataUrl(cv);
+    } else if (active === "sigType") {
+      renderTyped();
+      dataUrl = trimCanvasToDataUrl(pv);
+    } else {
+      const f = $("sigFile").files[0];
+      if (f) {
+        const raw = await readFileAsDataURL(f);
+        const img = await loadImageFromDataURL(raw);
+        const tmp = document.createElement("canvas");
+        tmp.width = img.naturalWidth; tmp.height = img.naturalHeight;
+        tmp.getContext("2d").drawImage(img, 0, 0);
+        dataUrl = tmp.toDataURL("image/png");
+      }
+    }
+    if (!dataUrl) {
+      toast("Draw, type, or choose a signature first", { error: true });
+      return;
+    }
+    storeSignature(dataUrl);
+    $("sigModal").classList.add("hidden");
+    await placeImageDataUrl(dataUrl, "png", 0.3);
+    toast("Signature placed — drag it into position");
+  });
 }
 
 // --------------------------------------------------------------- wiring ----
@@ -1751,6 +2084,7 @@ function wireKeyboard() {
     const k = e.key.toLowerCase();
     if (TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); return; }
     if (k === "i") { $("btnAddImage").click(); return; }
+    if (k === "s") { $("btnSign").click(); return; }
 
     if (e.key === "Delete" || e.key === "Backspace") {
       if (state.selId) { e.preventDefault(); deleteSelected(); }
@@ -1781,7 +2115,18 @@ window.addEventListener("DOMContentLoaded", () => {
   wireTools();
   wireProps();
   wireKeyboard();
+  wireDragDrop();
+  wireSignatures();
+
+  // Ctrl+scroll zooms toward the page.
+  viewer.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+
   setTool("select");
   newDocument("letter", "portrait");
   $("docName").value = "untitled";
+  tryOfferRestore();
 });

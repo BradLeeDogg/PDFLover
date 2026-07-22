@@ -53,6 +53,7 @@
     <button class="tool" data-tool="arrow"     title="Arrow (A)">➔ <span>Arrow</span></button>
     <button class="tool" data-tool="whiteout"  title="Whiteout — cover existing content (W)">▉ <span>Whiteout</span></button>
     <button class="tool-btn" id="btnAddImage"  title="Insert an image onto the page (I)">🖼 <span>Image</span></button>
+    <button class="tool-btn" id="btnSign"      title="Place your signature (S)">✍️ <span>Sign</span></button>
   </div>
 
   <div class="props" id="props">
@@ -230,6 +231,45 @@
     </div>
   </div>
 </div>
+
+<!-- ======================= SIGNATURE MODAL ======================= -->
+<div class="modal-backdrop hidden" id="sigModal">
+  <div class="modal small">
+    <div class="modal-head"><h2>✍️ Signature</h2><button class="modal-close" data-close="sigModal">✕</button></div>
+    <div class="modal-body">
+      <div class="sig-tabs">
+        <button class="sig-tab active" data-sigtab="sigDraw">Draw</button>
+        <button class="sig-tab" data-sigtab="sigType">Type</button>
+        <button class="sig-tab" data-sigtab="sigUpload">Upload</button>
+      </div>
+
+      <div id="sigDraw" class="sig-pane">
+        <canvas id="sigCanvas" width="460" height="160"></canvas>
+        <button id="sigClear" class="tb-btn">Clear</button>
+      </div>
+
+      <div id="sigType" class="sig-pane hidden">
+        <input type="text" id="sigText" placeholder="Type your name…">
+        <canvas id="sigTypePreview" width="460" height="110"></canvas>
+      </div>
+
+      <div id="sigUpload" class="sig-pane hidden">
+        <input type="file" id="sigFile" accept="image/*">
+        <p class="hint">A photo of your signature on white paper works well.</p>
+      </div>
+
+      <button id="sigPlace" class="tb-btn primary wide">Place on page</button>
+
+      <div id="sigSavedWrap" class="hidden">
+        <p class="hint">Saved signatures — click to place:</p>
+        <div id="sigSaved" class="sig-saved"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<div id="dropHint">Drop PDF or images to open</div>
 
 <!-- Hidden file inputs -->
 <input type="file" id="fileOpenPdf"   accept="application/pdf" class="hidden">

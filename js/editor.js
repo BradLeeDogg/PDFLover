@@ -291,6 +291,7 @@ function updateUndoButtons() {
 // ------------------------------------------------------------ rendering ----
 
 function refreshAll() {
+  clearSearchMatches();   // structural changes invalidate match positions
   renderPage();
   rebuildThumbs();
   updatePageLabel();
@@ -348,7 +349,31 @@ function renderOverlay() {
   overlayCtx.setTransform(s, 0, 0, s, 0, 0);
   drawFormFields(overlayCtx, page);
   drawObjects(overlayCtx, page, editingId);
+  drawSearchHighlights(overlayCtx);
   drawSelection(overlayCtx, page);
+}
+
+/** Full render of one page (background + form fields + objects) at a given
+    scale — shared by thumbnails and printing. */
+async function renderPageComposite(page, scale) {
+  const { w, h } = displayDims(page);
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(w * scale));
+  cv.height = Math.max(1, Math.round(h * scale));
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (page.src) {
+    const proxy = state.sources[page.src.s].proxies[page.src.p];
+    const vp = proxy.getViewport({ scale, rotation: totalRot(page) });
+    try {
+      await proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS }).promise;
+    } catch (e) { /* cancelled */ }
+  }
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  drawFormFields(ctx, page);
+  drawObjects(ctx, page, null);
+  return cv;
 }
 
 // ---------------------------------------------------------- form fields ----
@@ -1137,23 +1162,11 @@ async function rebuildThumbs() {
 }
 
 async function renderThumbCanvas(page, cv) {
-  const { w, h } = displayDims(page);
-  const scale = THUMB_W / w;
-  cv.width = Math.round(w * scale);
-  cv.height = Math.round(h * scale);
-  const ctx = cv.getContext("2d");
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, cv.width, cv.height);
-  if (page.src) {
-    const proxy = state.sources[page.src.s].proxies[page.src.p];
-    const vp = proxy.getViewport({ scale, rotation: totalRot(page) });
-    try {
-      await proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS }).promise;
-    } catch (e) { /* cancelled */ }
-  }
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  drawFormFields(ctx, page);
-  drawObjects(ctx, page, null);
+  const { w } = displayDims(page);
+  const composite = await renderPageComposite(page, THUMB_W / w);
+  cv.width = composite.width;
+  cv.height = composite.height;
+  cv.getContext("2d").drawImage(composite, 0, 0);
 }
 
 let thumbTimer = null;
@@ -1659,6 +1672,13 @@ function zoomFit() {
   setZoom((viewer.clientWidth - 56) / w);
 }
 
+function zoomFitPage() {
+  const page = curPage();
+  if (!page) return;
+  const { w, h } = displayDims(page);
+  setZoom(Math.min((viewer.clientWidth - 56) / w, (viewer.clientHeight - 48) / h));
+}
+
 // --------------------------------------------------------------- status ----
 
 let statusTimer = null;
@@ -1683,6 +1703,211 @@ function toast(msg, opts = {}) {
     setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 400); }, opts.ms || 4500);
   }
   return t;
+}
+
+// --------------------------------------------------------------- search ----
+
+const search = { query: "", matches: [], cur: -1 };   // matches: {pageIndex, rects}
+
+async function getPageTextItems(page) {
+  if (!page.src) return null;
+  const src = state.sources[page.src.s];
+  if (!src.textCache) src.textCache = new Map();
+  if (!src.textCache.has(page.src.p)) {
+    const tc = await src.proxies[page.src.p].getTextContent();
+    src.textCache.set(page.src.p, tc.items);
+  }
+  return src.textCache.get(page.src.p);
+}
+
+function itemDisplayRect(vp, item) {
+  const t = item.transform;
+  const h = Math.hypot(t[1], t[3]) || item.height || 10;
+  const w = item.width || 1;
+  const p1 = vp.convertToViewportPoint(t[4], t[5]);
+  const p2 = vp.convertToViewportPoint(t[4] + w, t[5] + h);
+  return {
+    x: Math.min(p1[0], p2[0]), y: Math.min(p1[1], p2[1]),
+    w: Math.abs(p2[0] - p1[0]) || 2, h: Math.abs(p2[1] - p1[1]) || 2,
+  };
+}
+
+async function runSearch(query) {
+  search.query = query;
+  search.matches = [];
+  search.cur = -1;
+  const q = query.trim().toLowerCase();
+  if (!q) { updateSearchUI(); renderOverlay(); return; }
+
+  for (let pi = 0; pi < state.pages.length; pi++) {
+    const page = state.pages[pi];
+    const items = await getPageTextItems(page);
+    if (!items || !items.length) continue;
+    const proxy = state.sources[page.src.s].proxies[page.src.p];
+    const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
+
+    let full = "";
+    const spans = [];
+    for (const it of items) {
+      if (!it.str) continue;
+      spans.push({ start: full.length, end: full.length + it.str.length, item: it });
+      full += it.str;
+      if (it.hasEOL) full += "\n";
+    }
+    const hay = full.toLowerCase();
+    let idx = 0;
+    while ((idx = hay.indexOf(q, idx)) !== -1) {
+      const end = idx + q.length;
+      const rects = [];
+      for (const sp of spans) {
+        if (sp.end <= idx || sp.start >= end) continue;
+        const r = itemDisplayRect(vp, sp.item);
+        if (r.w > r.h) {
+          // Slice horizontally by character proportion for partial coverage.
+          const len = sp.item.str.length || 1;
+          const sFrac = Math.max(0, idx - sp.start) / len;
+          const eFrac = Math.min(1, (end - sp.start) / len);
+          rects.push({ x: r.x + r.w * sFrac, y: r.y, w: Math.max(2, r.w * (eFrac - sFrac)), h: r.h });
+        } else {
+          rects.push(r);
+        }
+      }
+      if (rects.length) search.matches.push({ pageIndex: pi, rects });
+      idx = end;
+    }
+  }
+  updateSearchUI();
+  if (search.matches.length) gotoMatch(0);
+  else renderOverlay();
+}
+
+function gotoMatch(i) {
+  const n = search.matches.length;
+  if (!n) return;
+  search.cur = ((i % n) + n) % n;
+  const m = search.matches[search.cur];
+  if (m.pageIndex !== state.current) gotoPage(m.pageIndex);
+  else renderOverlay();
+  const r = m.rects[0];
+  viewer.scrollTo({ top: Math.max(0, r.y * state.zoom - viewer.clientHeight / 3), behavior: "smooth" });
+  updateSearchUI();
+}
+
+function drawSearchHighlights(ctx) {
+  if (!search.matches.length) return;
+  ctx.save();
+  search.matches.forEach((m, i) => {
+    if (m.pageIndex !== state.current) return;
+    ctx.fillStyle = i === search.cur ? "rgba(242,118,28,0.5)" : "rgba(255,222,0,0.35)";
+    for (const r of m.rects) ctx.fillRect(r.x, r.y - 1, r.w, r.h + 2);
+  });
+  ctx.restore();
+}
+
+function updateSearchUI() {
+  $("searchCount").textContent = search.matches.length
+    ? `${search.cur + 1} / ${search.matches.length}`
+    : "0 / 0";
+}
+
+function openSearch() {
+  $("searchBar").classList.remove("hidden");
+  $("searchInput").focus();
+  $("searchInput").select();
+}
+
+function closeSearch() {
+  $("searchBar").classList.add("hidden");
+  search.query = "";
+  search.matches = [];
+  search.cur = -1;
+  renderOverlay();
+}
+
+function clearSearchMatches() {
+  if (!search.matches.length && !search.query) return;
+  search.matches = [];
+  search.cur = -1;
+  updateSearchUI();
+}
+
+let searchDebounce = null;
+function wireSearch() {
+  $("btnSearch").addEventListener("click", openSearch);
+  $("searchInput").addEventListener("input", () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => runSearch($("searchInput").value), 250);
+  });
+  $("searchInput").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); gotoMatch(search.cur + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+  });
+  $("searchNext").addEventListener("click", () => gotoMatch(search.cur + 1));
+  $("searchPrev").addEventListener("click", () => gotoMatch(search.cur - 1));
+  $("searchClose").addEventListener("click", closeSearch);
+}
+
+// ---------------------------------------------------------------- print ----
+
+async function printDocument() {
+  toast("Preparing print…");
+  try {
+    const imgs = [];
+    for (const page of state.pages) {
+      imgs.push((await renderPageComposite(page, 2)).toDataURL("image/jpeg", 0.92));
+    }
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+    document.body.appendChild(frame);
+    const fdoc = frame.contentDocument;
+    fdoc.open();
+    fdoc.write(
+      "<!DOCTYPE html><html><head><title>PDFLover</title><style>" +
+      "body{margin:0}img{display:block;width:100%;page-break-after:always}img:last-child{page-break-after:auto}" +
+      "</style></head><body>" + imgs.map((s) => `<img src="${s}">`).join("") + "</body></html>"
+    );
+    fdoc.close();
+    await Promise.all([...fdoc.images].map((im) => im.decode().catch(() => {})));
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+    setTimeout(() => frame.remove(), 60000);
+  } catch (e) {
+    console.error(e);
+    toast("Print failed: " + e.message, { error: true });
+  }
+}
+
+// ------------------------------------------------------ object clipboard ----
+
+let objClipboard = null;
+
+function copySelected() {
+  const o = selectedObj();
+  if (!o) return false;
+  objClipboard = JSON.parse(JSON.stringify(o));
+  setStatus("Copied");
+  return true;
+}
+
+function pasteClipboard() {
+  if (!objClipboard) return false;
+  const page = curPage();
+  if (!page) return false;
+  pushUndo();
+  const o = JSON.parse(JSON.stringify(objClipboard));
+  o.id = uid();
+  moveObject(o, JSON.parse(JSON.stringify(o)), 14, 14);
+  page.objects.push(o);
+  state.selId = o.id;
+  renderOverlay();
+  scheduleThumb();
+  updatePropsPanel();
+  return true;
+}
+
+function duplicateSelected() {
+  if (copySelected()) pasteClipboard();
 }
 
 // ------------------------------------------------------------- autosave ----
@@ -2034,6 +2259,9 @@ function wireTopbar() {
   $("btnZoomIn").addEventListener("click", () => setZoom(state.zoom * 1.2));
   $("btnZoomOut").addEventListener("click", () => setZoom(state.zoom / 1.2));
   $("btnZoomFit").addEventListener("click", zoomFit);
+  $("btnZoomFitPage").addEventListener("click", zoomFitPage);
+  $("btnPrint").addEventListener("click", printDocument);
+  $("btnHelp").addEventListener("click", () => $("helpModal").classList.remove("hidden"));
   $("btnExport").addEventListener("click", exportPdf);
   $("btnConvert").addEventListener("click", () => $("convModal").classList.remove("hidden"));
 
@@ -2077,11 +2305,17 @@ function wireKeyboard() {
       if (k === "z" && !inField) { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       else if (k === "y" && !inField) { e.preventDefault(); redo(); }
       else if (k === "s") { e.preventDefault(); exportPdf(); }
+      else if (k === "f") { e.preventDefault(); openSearch(); }
+      else if (k === "p") { e.preventDefault(); printDocument(); }
+      else if (k === "c" && !inField && selectedObj()) { e.preventDefault(); copySelected(); }
+      else if (k === "v" && !inField && objClipboard) { e.preventDefault(); pasteClipboard(); }
+      else if (k === "d" && !inField && selectedObj()) { e.preventDefault(); duplicateSelected(); }
       return;
     }
     if (inField) return;
 
     const k = e.key.toLowerCase();
+    if (e.key === "?") { $("helpModal").classList.toggle("hidden"); return; }
     if (TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); return; }
     if (k === "i") { $("btnAddImage").click(); return; }
     if (k === "s") { $("btnSign").click(); return; }
@@ -2117,6 +2351,7 @@ window.addEventListener("DOMContentLoaded", () => {
   wireKeyboard();
   wireDragDrop();
   wireSignatures();
+  wireSearch();
 
   // Ctrl+scroll zooms toward the page.
   viewer.addEventListener("wheel", (e) => {

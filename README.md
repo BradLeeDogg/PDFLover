@@ -65,6 +65,12 @@ python3 -m http.server 8080
 - Draw, type, or upload your signature once — it's saved for reuse
 - One click stamps it on the page; drag and resize into position
 
+### 🧭 Navigate & produce
+- **Find in document** (`Ctrl+F`) with match highlights and next/previous navigation
+- **Print** (`Ctrl+P`) — pages print exactly as shown, including fills and annotations
+- **Copy / paste / duplicate** objects (`Ctrl+C / V / D`)
+- Fit-width and fit-page zoom; `?` shows a keyboard shortcut reference
+
 ### 🛟 Quality of life
 - **Drag & drop** PDFs or images anywhere onto the window to open/place them
 - **Drag page thumbnails** to reorder pages
@@ -87,12 +93,17 @@ python3 -m http.server 8080
 | Key | Action |
 |---|---|
 | `V` `T` `P` `H` `R` `E` `L` `A` `W` | Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout |
-| `I` | Insert image |
+| `I` / `S` | Insert image / Place signature |
+| `Ctrl+F` | Find in document |
+| `Ctrl+P` | Print |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 | `Ctrl+S` | Export PDF |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` | Copy / Paste / Duplicate selected object |
 | `Delete` | Delete selected object |
 | Arrow keys (+`Shift`) | Nudge selected object (×10) |
 | `PageUp` / `PageDown` | Previous / next page |
+| `Ctrl+Scroll` | Zoom |
+| `?` | Keyboard shortcut reference |
 
 ## Tech
 

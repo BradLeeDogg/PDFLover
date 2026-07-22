@@ -32,6 +32,13 @@
     <span id="zoomLabel" class="zoom-label">125%</span>
     <button id="btnZoomIn" class="tb-btn icon" title="Zoom in">＋</button>
     <button id="btnZoomFit" class="tb-btn icon" title="Fit width">⤢</button>
+    <button id="btnZoomFitPage" class="tb-btn icon" title="Fit whole page">⤡</button>
+  </div>
+
+  <div class="topbar-group">
+    <button id="btnSearch" class="tb-btn icon" title="Find in document (Ctrl+F)">🔍</button>
+    <button id="btnPrint" class="tb-btn icon" title="Print (Ctrl+P)">🖨</button>
+    <button id="btnHelp" class="tb-btn icon" title="Keyboard shortcuts (?)">?</button>
   </div>
 
   <div class="topbar-spacer"></div>
@@ -111,6 +118,13 @@
 
   <!-- Viewer -->
   <section class="viewer" id="viewer">
+    <div id="searchBar" class="hidden">
+      <input id="searchInput" type="text" placeholder="Find in document…" spellcheck="false">
+      <span id="searchCount">0 / 0</span>
+      <button id="searchPrev" title="Previous match (Shift+Enter)">‹</button>
+      <button id="searchNext" title="Next match (Enter)">›</button>
+      <button id="searchClose" title="Close (Esc)">✕</button>
+    </div>
     <div class="page-wrap" id="pageWrap">
       <canvas id="pageCanvas"></canvas>
       <canvas id="overlayCanvas"></canvas>
@@ -264,6 +278,29 @@
         <p class="hint">Saved signatures — click to place:</p>
         <div id="sigSaved" class="sig-saved"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SHORTCUTS MODAL ======================= -->
+<div class="modal-backdrop hidden" id="helpModal">
+  <div class="modal small">
+    <div class="modal-head"><h2>⌨ Keyboard shortcuts</h2><button class="modal-close" data-close="helpModal">✕</button></div>
+    <div class="modal-body">
+      <table class="help-table">
+        <tr><td><b>V T P H R E L A W</b></td><td>Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout</td></tr>
+        <tr><td><b>I</b> / <b>S</b></td><td>Insert image / Place signature</td></tr>
+        <tr><td><b>Ctrl+F</b></td><td>Find in document</td></tr>
+        <tr><td><b>Ctrl+P</b></td><td>Print</td></tr>
+        <tr><td><b>Ctrl+S</b></td><td>Export PDF</td></tr>
+        <tr><td><b>Ctrl+Z / Ctrl+Y</b></td><td>Undo / Redo</td></tr>
+        <tr><td><b>Ctrl+C / Ctrl+V / Ctrl+D</b></td><td>Copy / Paste / Duplicate selected object</td></tr>
+        <tr><td><b>Delete</b></td><td>Delete selected object</td></tr>
+        <tr><td><b>Arrows</b> (+<b>Shift</b>)</td><td>Nudge selected object (×10)</td></tr>
+        <tr><td><b>PageUp / PageDown</b></td><td>Previous / next page</td></tr>
+        <tr><td><b>Ctrl+Scroll</b></td><td>Zoom</td></tr>
+        <tr><td><b>?</b></td><td>This help</td></tr>
+      </table>
     </div>
   </div>
 </div>

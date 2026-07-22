@@ -1,0 +1,49 @@
+{
+  "name": "pdflover",
+  "productName": "PDFLover",
+  "version": "1.0.0",
+  "description": "All-in-one PDF creator, editor, and converter — runs fully offline",
+  "author": "BradLeeDogg",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.github.bradleedogg.pdflover",
+    "productName": "PDFLover",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "index.html",
+      "favicon.png",
+      "css/**",
+      "js/**",
+      "vendor/**",
+      "electron/**",
+      "build/icon.png"
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Office"
+    }
+  }
+}

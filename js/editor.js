@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------- state ----
 
 const state = {
-  sources: [],      // { bytes: Uint8Array, pdfjs: PDFDocumentProxy, proxies: PDFPageProxy[] }
+  sources: [],      // { bytes: Uint8Array, pdfjs: PDFDocumentProxy, proxies: PDFPageProxy[], fields: [][] }
   pages: [],        // { id, src:{s,p}|null, blank:{w,h}|null, rot:0|90|180|270, objects:[] }
   current: 0,
   zoom: 1.25,
@@ -21,6 +21,7 @@ const state = {
   undoStack: [],
   redoStack: [],
   dirty: false,
+  formValues: {},   // "sourceIndex:fieldName" -> string | boolean
 };
 
 // Defaults for newly created objects.
@@ -114,8 +115,65 @@ async function addSource(bytes) {
   const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
   const proxies = [];
   for (let i = 1; i <= doc.numPages; i++) proxies.push(await doc.getPage(i));
-  state.sources.push({ bytes, pdfjs: doc, proxies });
-  return state.sources.length - 1;
+  const s = state.sources.length;
+
+  // Detect fillable form fields (AcroForm widgets) on every page.
+  const fields = [];
+  for (const proxy of proxies) {
+    const annots = await proxy.getAnnotations();
+    fields.push(annots
+      .filter((a) => a.subtype === "Widget" && a.fieldType && a.fieldName)
+      .map((a) => ({
+        name: a.fieldName,
+        type: a.fieldType === "Tx" ? "text"
+            : a.fieldType === "Ch" ? "choice"
+            : a.checkBox ? "checkbox"
+            : a.radioButton ? "radio"
+            : "button",
+        rect: a.rect,
+        multiLine: !!a.multiLine,
+        readOnly: !!a.readOnly,
+        exportValue: a.exportValue != null ? a.exportValue : a.buttonValue,
+        options: a.options || [],
+        bg: a.backgroundColor ? [...a.backgroundColor] : null,
+        border: a.borderColor ? [...a.borderColor] : null,
+        fontSize: (a.defaultAppearanceData && a.defaultAppearanceData.fontSize) || 0,
+        initial: a.fieldValue,
+      })));
+  }
+  for (const list of fields) {
+    for (const f of list) {
+      const key = s + ":" + f.name;
+      if (key in state.formValues) continue;
+      if (f.type === "checkbox") state.formValues[key] = !!(f.initial && f.initial !== "Off");
+      else if (f.type === "radio") state.formValues[key] = f.initial && f.initial !== "Off" ? String(f.initial) : "";
+      else state.formValues[key] = f.initial != null ? String(f.initial) : "";
+    }
+  }
+
+  state.sources.push({ bytes, pdfjs: doc, proxies, fields });
+  return s;
+}
+
+function pageFields(page) {
+  if (!page || !page.src) return [];
+  return (state.sources[page.src.s].fields[page.src.p] || []).filter((f) => f.type !== "button");
+}
+
+function fieldKey(page, f) { return page.src.s + ":" + f.name; }
+
+function countFormFields() {
+  let n = 0;
+  for (const page of state.pages) n += pageFields(page).length;
+  return n;
+}
+
+/** Display-space rect (scale 1, current rotation) of a form field widget. */
+function fieldDisplayRect(page, f) {
+  const proxy = state.sources[page.src.s].proxies[page.src.p];
+  const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
+  const [x1, y1, x2, y2] = vp.convertToViewportRectangle(f.rect);
+  return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
 }
 
 function blankPage(w, h) {
@@ -132,6 +190,7 @@ function newDocument(sizeKey, orient) {
   state.undoStack = [];
   state.redoStack = [];
   state.dirty = false;
+  state.formValues = {};
   imageCache.clear();
   refreshAll();
 }
@@ -147,6 +206,8 @@ async function openPdfBytes(bytes, name) {
   state.dirty = false;
   if (name) $("docName").value = name.replace(/\.pdf$/i, "");
   refreshAll();
+  const nFields = countFormFields();
+  if (nFields) setStatus(`Fillable form detected: ${nFields} field(s) — click a field to fill it in`);
 }
 
 async function insertPdfBytes(bytes) {
@@ -163,7 +224,7 @@ async function insertPdfBytes(bytes) {
 // ------------------------------------------------------------ undo/redo ----
 
 function snapshot() {
-  return JSON.stringify({ pages: state.pages, current: state.current });
+  return JSON.stringify({ pages: state.pages, current: state.current, formValues: state.formValues });
 }
 
 function pushSnap(snap) {
@@ -179,6 +240,7 @@ function pushUndo() { pushSnap(snapshot()); }
 function restore(snap) {
   const data = JSON.parse(snap);
   state.pages = data.pages;
+  if (data.formValues) state.formValues = data.formValues;
   state.current = clamp(data.current, 0, state.pages.length - 1);
   state.selId = null;
   closeTextEditor(false);
@@ -241,7 +303,8 @@ async function renderPage() {
     const proxy = state.sources[page.src.s].proxies[page.src.p];
     const vp = proxy.getViewport({ scale: zoom * dpr, rotation: totalRot(page) });
     if (renderTask) renderTask.cancel();
-    renderTask = proxy.render({ canvasContext: pageCtx, viewport: vp });
+    // ENABLE_FORMS excludes form widget appearances; we draw live values ourselves.
+    renderTask = proxy.render({ canvasContext: pageCtx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS });
     try {
       await renderTask.promise;
     } catch (e) {
@@ -261,8 +324,81 @@ function renderOverlay() {
   overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   overlayCtx.setTransform(s, 0, 0, s, 0, 0);
+  drawFormFields(overlayCtx, page);
   drawObjects(overlayCtx, page, editingId);
   drawSelection(overlayCtx, page);
+}
+
+// ---------------------------------------------------------- form fields ----
+
+function drawFormFields(ctx, page) {
+  const fields = pageFields(page);
+  for (const f of fields) {
+    const r = fieldDisplayRect(page, f);
+    const v = state.formValues[fieldKey(page, f)];
+    ctx.save();
+    // Field background: the widget's own color, or a soft tint so fillable
+    // areas are visible.
+    ctx.fillStyle = f.bg ? `rgb(${f.bg[0]},${f.bg[1]},${f.bg[2]})` : "rgba(79,140,255,0.08)";
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    if (f.border) {
+      ctx.strokeStyle = `rgb(${f.border[0]},${f.border[1]},${f.border[2]})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+    }
+
+    if (f.type === "checkbox" || f.type === "radio") {
+      const checked = f.type === "checkbox" ? v === true : v === String(f.exportValue);
+      const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+      const s = Math.min(r.w, r.h);
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = Math.max(1, s * 0.08);
+      if (f.type === "radio") {
+        ctx.beginPath(); ctx.arc(cx, cy, s * 0.38, 0, Math.PI * 2); ctx.stroke();
+        if (checked) { ctx.fillStyle = "#111"; ctx.beginPath(); ctx.arc(cx, cy, s * 0.2, 0, Math.PI * 2); ctx.fill(); }
+      } else if (checked) {
+        ctx.strokeStyle = "#111";
+        ctx.lineWidth = Math.max(1.5, s * 0.14);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(r.x + r.w * 0.22, cy);
+        ctx.lineTo(cx - s * 0.05, r.y + r.h * 0.72);
+        ctx.lineTo(r.x + r.w * 0.8, r.y + r.h * 0.28);
+        ctx.stroke();
+      }
+    } else {
+      const text = v != null ? String(v) : "";
+      if (text) {
+        const fs = f.fontSize || Math.min(Math.max(r.h * 0.55, 7), 13);
+        ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+        ctx.fillStyle = "#111";
+        ctx.font = `${fs}px Helvetica, Arial, sans-serif`;
+        ctx.textBaseline = "alphabetic";
+        const pad = 2.5;
+        if (f.multiLine) {
+          text.split("\n").forEach((line, i) => ctx.fillText(line, r.x + pad, r.y + pad + (i + 0.85) * fs * 1.2));
+        } else {
+          ctx.fillText(text.replace(/\n/g, " "), r.x + pad, r.y + r.h / 2 + fs * 0.36);
+        }
+      }
+      if (f.type === "choice") {
+        // small dropdown arrow
+        ctx.fillStyle = "#667";
+        const ax = r.x + r.w - 10, ay = r.y + r.h / 2 - 1.5;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax + 7, ay); ctx.lineTo(ax + 3.5, ay + 4.5); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+}
+
+function hitField(page, dx, dy) {
+  const fields = pageFields(page);
+  for (let i = fields.length - 1; i >= 0; i--) {
+    const r = fieldDisplayRect(page, fields[i]);
+    if (dx >= r.x && dx <= r.x + r.w && dy >= r.y && dy <= r.y + r.h) return fields[i];
+  }
+  return null;
 }
 
 function fontString(o, scale = 1) {
@@ -494,6 +630,26 @@ overlayCanvas.addEventListener("pointerdown", (e) => {
     } else {
       state.selId = null;
       drag = null;
+      const f = hitField(page, x, y);
+      if (f && !f.readOnly) {
+        const key = fieldKey(page, f);
+        if (f.type === "checkbox") {
+          pushSnap(snap);
+          state.formValues[key] = !state.formValues[key];
+        } else if (f.type === "radio") {
+          pushSnap(snap);
+          state.formValues[key] = String(f.exportValue);
+        } else if (f.type === "choice" && f.options.length) {
+          openChoiceEditor(page, f);
+        } else {
+          e.preventDefault();
+          openFieldEditor(page, f);
+        }
+        renderOverlay();
+        scheduleThumb();
+        updatePropsPanel();
+        return;
+      }
     }
     updatePropsPanel();
     renderOverlay();
@@ -542,7 +698,18 @@ overlayCanvas.addEventListener("pointerdown", (e) => {
 });
 
 overlayCanvas.addEventListener("pointermove", (e) => {
-  if (!drag) return;
+  if (!drag) {
+    // Hover feedback for fillable form fields in select mode.
+    if (state.tool === "select") {
+      const page = curPage();
+      const { x, y } = eventPoint(e);
+      const f = page && !hitObject(page, x, y) ? hitField(page, x, y) : null;
+      overlayCanvas.style.cursor = f && !f.readOnly
+        ? (f.type === "text" ? "text" : "pointer")
+        : "";
+    }
+    return;
+  }
   const { x, y } = eventPoint(e);
   const o = drag.obj;
 
@@ -697,7 +864,74 @@ function sizeTextEditor(o) {
   textEditor.style.height = Math.max(1, lines.length) * o.size * 1.25 * state.zoom + 6 + "px";
 }
 
+// -- form field editing (reuses the floating textarea) --
+
+let fieldEdit = null;   // { key, snap, multiLine }
+
+function openFieldEditor(page, f) {
+  closeTextEditor(true);
+  const r = fieldDisplayRect(page, f);
+  fieldEdit = { key: fieldKey(page, f), snap: snapshot(), multiLine: f.multiLine };
+  const fs = f.fontSize || Math.min(Math.max(r.h * 0.55, 7), 13);
+  textEditor.value = String(state.formValues[fieldEdit.key] ?? "");
+  textEditor.style.left = r.x * state.zoom + "px";
+  textEditor.style.top = r.y * state.zoom + "px";
+  textEditor.style.width = r.w * state.zoom + "px";
+  textEditor.style.height = r.h * state.zoom + "px";
+  textEditor.style.font = `${fs * state.zoom}px Helvetica, Arial, sans-serif`;
+  textEditor.style.lineHeight = "1.2";
+  textEditor.style.color = "#111";
+  textEditor.classList.remove("hidden");
+  setTimeout(() => textEditor.focus(), 0);
+}
+
+function openChoiceEditor(page, f) {
+  closeTextEditor(true);
+  const r = fieldDisplayRect(page, f);
+  const key = fieldKey(page, f);
+  const snap = snapshot();
+  const sel = document.createElement("select");
+  sel.className = "field-select";
+  const blank = document.createElement("option");
+  blank.value = ""; blank.textContent = "—";
+  sel.appendChild(blank);
+  for (const opt of f.options) {
+    const el = document.createElement("option");
+    el.value = opt.exportValue != null ? String(opt.exportValue) : String(opt.displayValue);
+    el.textContent = String(opt.displayValue ?? opt.exportValue);
+    sel.appendChild(el);
+  }
+  sel.value = String(state.formValues[key] ?? "");
+  sel.style.left = r.x * state.zoom + "px";
+  sel.style.top = r.y * state.zoom + "px";
+  sel.style.width = Math.max(60, r.w * state.zoom) + "px";
+  sel.style.height = Math.max(20, r.h * state.zoom) + "px";
+  pageWrap.appendChild(sel);
+  sel.addEventListener("change", () => {
+    pushSnap(snap);
+    state.formValues[key] = sel.value;
+    sel.remove();
+    renderOverlay();
+    scheduleThumb();
+  });
+  sel.addEventListener("blur", () => sel.remove());
+  setTimeout(() => sel.focus(), 0);
+}
+
 function closeTextEditor(commit) {
+  if (fieldEdit) {
+    const { key, snap } = fieldEdit;
+    fieldEdit = null;
+    textEditor.classList.add("hidden");
+    const val = textEditor.value.replace(/\r/g, "");
+    if (commit && val !== String(state.formValues[key] ?? "")) {
+      pushSnap(snap);
+      state.formValues[key] = val;
+    }
+    renderOverlay();
+    scheduleThumb();
+    return;
+  }
   if (!editingId) return;
   const page = curPage();
   const o = page && page.objects.find((x) => x.id === editingId);
@@ -727,6 +961,7 @@ textEditor.addEventListener("blur", () => closeTextEditor(true));
 textEditor.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (e.key === "Escape") { e.preventDefault(); closeTextEditor(true); }
+  else if (e.key === "Enter" && fieldEdit && !fieldEdit.multiLine) { e.preventDefault(); closeTextEditor(true); }
 });
 
 // ------------------------------------------------------------ page ops ----
@@ -859,10 +1094,11 @@ async function renderThumbCanvas(page, cv) {
     const proxy = state.sources[page.src.s].proxies[page.src.p];
     const vp = proxy.getViewport({ scale, rotation: totalRot(page) });
     try {
-      await proxy.render({ canvasContext: ctx, viewport: vp }).promise;
+      await proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS }).promise;
     } catch (e) { /* cancelled */ }
   }
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  drawFormFields(ctx, page);
   drawObjects(ctx, page, null);
 }
 
@@ -1002,6 +1238,56 @@ async function imageBytesForRotation(o, R) {
   return { bytes: dataUrlToBytes(cv.toDataURL("image/png")), fmt: "png" };
 }
 
+/**
+ * Write the user's field values into a source document's AcroForm, then
+ * flatten it so values become permanent page content. Without flattening,
+ * page-copying would orphan the widgets and values could vanish in other
+ * viewers (form data lives in the document catalog, not the page tree).
+ */
+async function applyAndFlattenForm(libDoc, sourceIndex) {
+  let fields;
+  try {
+    fields = libDoc.getForm().getFields();
+  } catch (e) {
+    return;   // no or malformed AcroForm
+  }
+  if (!fields.length) return;
+  const form = libDoc.getForm();
+  for (const f of fields) {
+    const key = sourceIndex + ":" + f.getName();
+    if (!(key in state.formValues)) continue;
+    const v = state.formValues[key];
+    try {
+      if (f instanceof PDFLib.PDFTextField) f.setText(sanitizeWinAnsi(String(v ?? "")));
+      else if (f instanceof PDFLib.PDFCheckBox) v ? f.check() : f.uncheck();
+      else if (f instanceof PDFLib.PDFRadioGroup || f instanceof PDFLib.PDFDropdown || f instanceof PDFLib.PDFOptionList) {
+        if (v) {
+          // pdf.js reports the appearance-state name, which in some forms is
+          // an index into the option list rather than the option string.
+          const opts = f.getOptions();
+          let val = String(v);
+          if (!opts.includes(val) && /^\d+$/.test(val) && opts[+val] != null) val = opts[+val];
+          f.select(val);
+        }
+      }
+    } catch (e) {
+      console.warn(`Could not set form field "${f.getName()}":`, e.message);
+    }
+  }
+  try {
+    form.updateFieldAppearances(await libDoc.embedFont(StandardFonts.Helvetica));
+  } catch (e) {
+    console.warn("updateFieldAppearances:", e.message);
+  }
+  try {
+    form.flatten();
+  } catch (e) {
+    // Leave the widgets in place — their updated appearance streams still
+    // render in most viewers even when copying orphans the AcroForm.
+    console.warn("form.flatten failed; keeping widgets with updated appearances:", e.message);
+  }
+}
+
 async function buildPdf(pageList) {
   const outDoc = await PDFDocument.create();
   outDoc.setProducer("PDFLover");
@@ -1013,7 +1299,9 @@ async function buildPdf(pageList) {
     let outPage;
     if (page.src) {
       if (!libDocs.has(page.src.s)) {
-        libDocs.set(page.src.s, await PDFDocument.load(state.sources[page.src.s].bytes, { ignoreEncryption: true }));
+        const libDoc = await PDFDocument.load(state.sources[page.src.s].bytes, { ignoreEncryption: true });
+        await applyAndFlattenForm(libDoc, page.src.s);
+        libDocs.set(page.src.s, libDoc);
       }
       const [copied] = await outDoc.copyPages(libDocs.get(page.src.s), [page.src.p]);
       outPage = outDoc.addPage(copied);

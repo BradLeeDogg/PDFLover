@@ -3,9 +3,29 @@
 An all-in-one **PDF Creator / Editor / Converter** that runs entirely in your browser.
 No server, no uploads, no build step — your files never leave your machine.
 
-## Running it
+## Getting it
 
-Open `index.html` directly, or serve the folder with any static server:
+### 🖥️ Desktop app (Windows / macOS / Linux)
+
+Installers are built by GitHub Actions:
+
+1. Go to the repo's **Actions** tab → **Build desktop apps** → **Run workflow** (or push a tag like `v1.0.0` to also create a GitHub Release with the installers attached).
+2. When the run finishes, download the artifact for your OS:
+   - **Windows** — `PDFLover-…-Setup.exe` (installer) or the `portable` `.exe` (no install needed)
+   - **macOS** — `.dmg` (unsigned: right-click → Open the first time)
+   - **Linux** — `.AppImage` (make executable, run) or `.deb`
+
+Or build locally (needs Node.js 18+):
+
+```bash
+npm install
+npm start          # run the desktop app
+npm run dist       # build the installer for your current OS into dist/
+```
+
+### 🌐 Browser version
+
+No install needed — open `index.html` directly, or serve the folder with any static server:
 
 ```bash
 python3 -m http.server 8080

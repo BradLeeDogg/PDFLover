@@ -1132,6 +1132,13 @@ function rotateCurrentPage(dir) {
       o.w = Math.abs(p2.x - p1.x); o.h = Math.abs(p2.y - p1.y);
     }
   }
+  if (page.ocrWords) {
+    for (const word of page.ocrWords) {
+      const p1 = mapPt(word.x, word.y), p2 = mapPt(word.x + word.w, word.y + word.h);
+      word.x = Math.min(p1.x, p2.x); word.y = Math.min(p1.y, p2.y);
+      word.w = Math.abs(p2.x - p1.x); word.h = Math.abs(p2.y - p1.y);
+    }
+  }
   refreshAll();
 }
 
@@ -1542,6 +1549,7 @@ async function buildPdf(pageList) {
       outPage = outDoc.addPage([page.blank.w, page.blank.h]);
       if (page.rot) outPage.setRotation(degrees(page.rot));
     }
+    await bakeOcrText(outDoc, outPage, page, fontCache, ovr);
     await bakeFormFields(outDoc, outPage, page, fontCache, ovr);
     await bakeObjects(outDoc, outPage, page, fontCache, ovr);
   }
@@ -1828,34 +1836,20 @@ async function runSearch(query) {
   const q = query.trim().toLowerCase();
   if (!q) { updateSearchUI(); renderOverlay(); return; }
 
-  for (let pi = 0; pi < state.pages.length; pi++) {
-    const page = state.pages[pi];
-    const items = await getPageTextItems(page);
-    if (!items || !items.length) continue;
-    const proxy = state.sources[page.src.s].proxies[page.src.p];
-    const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
-
-    let full = "";
-    const spans = [];
-    for (const it of items) {
-      if (!it.str) continue;
-      spans.push({ start: full.length, end: full.length + it.str.length, item: it });
-      full += it.str;
-      if (it.hasEOL) full += "\n";
-    }
-    const hay = full.toLowerCase();
+  // Generic matcher over "spans": [{start, end, rect, len}] covering a
+  // concatenated haystack; partial coverage slices horizontal rects by
+  // character proportion.
+  const matchSpans = (pi, hay, spans) => {
     let idx = 0;
     while ((idx = hay.indexOf(q, idx)) !== -1) {
       const end = idx + q.length;
       const rects = [];
       for (const sp of spans) {
         if (sp.end <= idx || sp.start >= end) continue;
-        const r = itemDisplayRect(vp, sp.item);
+        const r = sp.rect;
         if (r.w > r.h) {
-          // Slice horizontally by character proportion for partial coverage.
-          const len = sp.item.str.length || 1;
-          const sFrac = Math.max(0, idx - sp.start) / len;
-          const eFrac = Math.min(1, (end - sp.start) / len);
+          const sFrac = Math.max(0, idx - sp.start) / sp.len;
+          const eFrac = Math.min(1, (end - sp.start) / sp.len);
           rects.push({ x: r.x + r.w * sFrac, y: r.y, w: Math.max(2, r.w * (eFrac - sFrac)), h: r.h });
         } else {
           rects.push(r);
@@ -1863,6 +1857,40 @@ async function runSearch(query) {
       }
       if (rects.length) search.matches.push({ pageIndex: pi, rects });
       idx = end;
+    }
+  };
+
+  for (let pi = 0; pi < state.pages.length; pi++) {
+    const page = state.pages[pi];
+
+    // Native text layer.
+    const items = await getPageTextItems(page);
+    if (items && items.length) {
+      const proxy = state.sources[page.src.s].proxies[page.src.p];
+      const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
+      let full = "";
+      const spans = [];
+      for (const it of items) {
+        if (!it.str) continue;
+        spans.push({ start: full.length, end: full.length + it.str.length, rect: itemDisplayRect(vp, it), len: it.str.length || 1 });
+        full += it.str;
+        if (it.hasEOL) full += "\n";
+      }
+      matchSpans(pi, full.toLowerCase(), spans);
+    }
+
+    // OCR layer (scanned pages).
+    if (page.ocrWords && page.ocrWords.length) {
+      let full = "";
+      const spans = [];
+      for (const word of page.ocrWords) {
+        spans.push({
+          start: full.length, end: full.length + word.t.length,
+          rect: { x: word.x, y: word.y, w: word.w, h: word.h }, len: word.t.length || 1,
+        });
+        full += word.t + " ";
+      }
+      matchSpans(pi, full.toLowerCase(), spans);
     }
   }
   updateSearchUI();
@@ -2356,6 +2384,7 @@ function wireTopbar() {
   $("btnZoomFit").addEventListener("click", zoomFit);
   $("btnZoomFitPage").addEventListener("click", zoomFitPage);
   $("btnPrint").addEventListener("click", printDocument);
+  $("btnOcr").addEventListener("click", () => ocrDocument());
   $("btnHelp").addEventListener("click", () => $("helpModal").classList.remove("hidden"));
   $("btnExport").addEventListener("click", exportPdf);
   $("btnConvert").addEventListener("click", () => $("convModal").classList.remove("hidden"));

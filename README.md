@@ -65,6 +65,11 @@ python3 -m http.server 8080
 - Draw, type, or upload your signature once — it's saved for reuse
 - One click stamps it on the page; drag and resize into position
 
+### 🅰 OCR scanned PDFs
+- One click recognizes text in scanned pages — fully offline (Tesseract engine and English model are bundled)
+- Recognized text becomes searchable with `Ctrl+F`
+- Exports gain an invisible text layer: the scan looks identical but is selectable and text-extractable in any viewer
+
 ### 🧭 Navigate & produce
 - **Continuous scrolling** — all pages in one smooth scroll, rendered lazily as you go; the page indicator and thumbnails track your position
 - **Find in document** (`Ctrl+F`) with match highlights and next/previous navigation

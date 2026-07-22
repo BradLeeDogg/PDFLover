@@ -61,6 +61,17 @@ python3 -m http.server 8080
 - Full undo / redo
 - **Export PDF** bakes everything into a standard PDF you can share
 
+### ✍️ Sign
+- Draw, type, or upload your signature once — it's saved for reuse
+- One click stamps it on the page; drag and resize into position
+
+### 🛟 Quality of life
+- **Drag & drop** PDFs or images anywhere onto the window to open/place them
+- **Drag page thumbnails** to reorder pages
+- **Autosave** — work is continuously saved in your browser; if the tab or app closes, you're offered a one-click restore on next launch
+- `Ctrl+scroll` to zoom; toast notifications for important events
+- A safety note when using whiteout on original content (the text underneath remains recoverable in exports from unprotected PDFs)
+
 ### 🔁 Convert
 | Conversion | Details |
 |---|---|

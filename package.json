@@ -21,6 +21,15 @@
     "appId": "io.github.bradleedogg.pdflover",
     "productName": "PDFLover",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "description": "PDF Document",
+        "mimeType": "application/pdf",
+        "role": "Editor"
+      }
+    ],
     "files": [
       "index.html",
       "favicon.png",

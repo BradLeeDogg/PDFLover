@@ -10,7 +10,7 @@ No server, no uploads, no build step — your files never leave your machine.
 Installers are built by GitHub Actions:
 
 1. Go to the repo's **Actions** tab → **Build desktop apps** → **Run workflow** (or push a tag like `v1.0.0` to also create a GitHub Release with the installers attached).
-2. When the run finishes, download the artifact for your OS:
+2. When the run finishes, download the artifact for your OS. The installed app registers as a handler for `.pdf` files ("Open with → PDFLover"), has a native menu, and remembers its window size:
    - **Windows** — `PDFLover-…-Setup.exe` (installer) or the `portable` `.exe` (no install needed)
    - **macOS** — `.dmg` (unsigned: right-click → Open the first time)
    - **Linux** — `.AppImage` (make executable, run) or `.deb`
@@ -71,11 +71,15 @@ python3 -m http.server 8080
 - Exports gain an invisible text layer: the scan looks identical but is selectable and text-extractable in any viewer
 
 ### 🧭 Navigate & produce
+- **Select & copy text** from any page (`X` tool) — works on native text and OCR'd scans alike
 - **Continuous scrolling** — all pages in one smooth scroll, rendered lazily as you go; the page indicator and thumbnails track your position
 - **Find in document** (`Ctrl+F`) with match highlights and next/previous navigation
 - **Print** (`Ctrl+P`) — pages print exactly as shown, including fills and annotations
 - **Copy / paste / duplicate** objects (`Ctrl+C / V / D`)
 - Fit-width and fit-page zoom; `?` shows a keyboard shortcut reference
+
+### 🔒 Protect
+- **Password-protect exports** (AES encryption): click the lock next to Export, set a password, and the exported file requires it to open
 
 ### 🛟 Quality of life
 - **Drag & drop** PDFs or images anywhere onto the window to open/place them
@@ -99,6 +103,7 @@ python3 -m http.server 8080
 | Key | Action |
 |---|---|
 | `V` `T` `P` `H` `R` `E` `L` `A` `W` | Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout |
+| `X` | Select & copy text from the page |
 | `I` / `S` | Insert image / Place signature |
 | `Ctrl+F` | Find in document |
 | `Ctrl+P` | Print |

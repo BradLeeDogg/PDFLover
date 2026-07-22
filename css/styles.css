@@ -219,6 +219,28 @@ body { display: flex; flex-direction: column; }
   touch-action: none;
 }
 
+/* Selectable text layer (native text + OCR), between page and overlay */
+.text-layer {
+  position: absolute;
+  left: 0; top: 0;
+  overflow: hidden;
+  line-height: 1;
+  z-index: 5;
+  pointer-events: none;
+  user-select: none;
+}
+.text-layer span {
+  position: absolute;
+  white-space: pre;
+  color: transparent;
+  transform-origin: 0 0;
+  cursor: text;
+}
+.text-layer span::selection { background: rgba(79,140,255,0.4); }
+/* Only in text-select mode is the layer active and the overlay inert */
+#pageColumn[data-tool="textselect"] .text-layer { pointer-events: auto; user-select: text; }
+#pageColumn[data-tool="textselect"] .overlay-canvas { pointer-events: none; }
+
 /* cursor per tool, set via data attribute on the page column */
 #pageColumn[data-tool="select"]    .overlay-canvas { cursor: default; }
 #pageColumn[data-tool="text"]      .overlay-canvas { cursor: text; }
@@ -392,6 +414,12 @@ body { display: flex; flex-direction: column; }
   border-radius: 5px; width: 26px; height: 26px; cursor: pointer;
 }
 #searchBar button:hover { background: #2f3440; }
+
+/* ---------- Lock / password ---------- */
+.checkline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.lock-msg { font-size: 12px; min-height: 16px; color: #ff8598; }
+.lock-msg.ok { color: #7dd97d; }
+#btnLock.locked { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ---------- Help table ---------- */
 .help-table { border-collapse: collapse; width: 100%; font-size: 13px; }

@@ -22,6 +22,7 @@ const state = {
   redoStack: [],
   dirty: false,
   formValues: {},   // "sourceIndex:fieldName" -> string | boolean
+  exportPassword: null,   // when set, exports are AES-encrypted (never autosaved)
 };
 
 // Defaults for newly created objects.
@@ -305,13 +306,16 @@ function buildPageViews() {
     wrap.dataset.index = i;
     const canvas = document.createElement("canvas");
     canvas.className = "page-canvas";
+    const textLayer = document.createElement("div");
+    textLayer.className = "text-layer";
     const overlay = document.createElement("canvas");
     overlay.className = "overlay-canvas";
     wrap.appendChild(canvas);
+    wrap.appendChild(textLayer);
     wrap.appendChild(overlay);
     wireOverlayEvents(overlay, i);
     pageColumn.appendChild(wrap);
-    return { wrap, canvas, overlay, key: null, task: null };
+    return { wrap, canvas, textLayer, overlay, key: null, textKey: null, task: null };
   });
   layoutPageViews();
   renderVisiblePages();
@@ -335,7 +339,11 @@ async function renderView(i) {
   const dpr = window.devicePixelRatio || 1;
   const { w, h } = displayDims(page);
   const key = `${page.id}|${state.zoom}|${totalRot(page)}|${dpr}`;
-  if (v.key === key) { renderOverlayFor(i); return; }
+  if (v.key === key) {
+    renderOverlayFor(i);
+    if (state.tool === "textselect") buildTextLayer(i);
+    return;
+  }
   v.key = key;
   const z = state.zoom;
   v.canvas.width = Math.round(w * z * dpr);
@@ -367,6 +375,75 @@ async function renderView(i) {
     v.task = null;
   }
   renderOverlayFor(i);
+  if (state.tool === "textselect") buildTextLayer(i);
+}
+
+/**
+ * Populate a page's selectable text layer with transparent, positioned
+ * spans for the native text items and any OCR words. Selecting and copying
+ * yields the underlying text in reading order.
+ */
+async function buildTextLayer(i) {
+  const page = state.pages[i];
+  const v = pageViews[i];
+  if (!page || !v) return;
+  const z = state.zoom;
+  const key = `${page.id}|${z}|${totalRot(page)}`;
+  if (v.textKey === key) return;
+  v.textKey = key;
+
+  const layer = v.textLayer;
+  const { w, h } = displayDims(page);
+  layer.style.width = w * z + "px";
+  layer.style.height = h * z + "px";
+  layer.innerHTML = "";
+
+  const entries = [];   // {x,y,w,h,str} in display coords (scale 1)
+  const items = await getPageTextItems(page);
+  if (v.textKey !== key) return;   // superseded while awaiting
+  if (items && items.length) {
+    const proxy = state.sources[page.src.s].proxies[page.src.p];
+    const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
+    for (const it of items) {
+      if (!it.str || !it.str.trim()) continue;
+      const r = itemDisplayRect(vp, it);
+      entries.push({ x: r.x, y: r.y, w: r.w, h: r.h, str: it.str, eol: it.hasEOL });
+    }
+  } else if (page.ocrWords) {
+    for (const word of page.ocrWords) {
+      entries.push({ x: word.x, y: word.y, w: word.w, h: word.h, str: word.t, eol: false });
+    }
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const e of entries) {
+    const span = document.createElement("span");
+    span.textContent = e.str + (e.eol ? "\n" : " ");
+    span.style.left = e.x * z + "px";
+    span.style.top = e.y * z + "px";
+    const fs = Math.max(4, e.h * z);
+    span.style.fontSize = fs + "px";
+    // Scale horizontally so the span's width matches the source box, keeping
+    // selection boxes aligned with the rendered glyphs.
+    measureCtx.font = `${fs}px sans-serif`;
+    const natural = measureCtx.measureText(e.str).width || 1;
+    span.style.transform = `scaleX(${(e.w * z) / natural})`;
+    frag.appendChild(span);
+  }
+  layer.appendChild(frag);
+}
+
+function refreshTextLayers() {
+  pageViews.forEach((v, i) => {
+    v.textKey = null;
+    v.textLayer.innerHTML = "";
+    if (state.tool === "textselect") {
+      const y0 = v.wrap.offsetTop;
+      if (y0 + v.wrap.offsetHeight >= viewer.scrollTop - 900 && y0 <= viewer.scrollTop + viewer.clientHeight + 900) {
+        buildTextLayer(i);
+      }
+    }
+  });
 }
 
 /** Render pages near the viewport; distant pages stay as white placeholders. */
@@ -1524,7 +1601,7 @@ async function rasterizePageToPdf(outDoc, page) {
   return { outPage, ovr: { mapPt: (dx, dy) => [dx, h - dy], R: 0 } };
 }
 
-async function buildPdf(pageList) {
+async function buildPdf(pageList, opts = {}) {
   const outDoc = await PDFDocument.create();
   outDoc.setProducer("PDFLover");
   outDoc.setCreator("PDFLover");
@@ -1553,20 +1630,29 @@ async function buildPdf(pageList) {
     await bakeFormFields(outDoc, outPage, page, fontCache, ovr);
     await bakeObjects(outDoc, outPage, page, fontCache, ovr);
   }
+  if (opts.password) {
+    // AES-128 encryption via the @cantoo/pdf-lib fork; same password unlocks
+    // and grants full owner permissions.
+    outDoc.encrypt({
+      userPassword: opts.password,
+      ownerPassword: opts.password,
+      permissions: { printing: "highResolution", modifying: true, copying: true, annotating: true },
+    });
+  }
   return outDoc.save();
 }
 
 async function exportPdf() {
   closeTextEditor(true);
   try {
-    setStatus("Exporting…");
-    const bytes = await buildPdf(state.pages);
+    setStatus(state.exportPassword ? "Encrypting & exporting…" : "Exporting…");
+    const bytes = await buildPdf(state.pages, { password: state.exportPassword || null });
     const name = ($("docName").value.trim() || "document") + ".pdf";
     downloadBytes(bytes, name, "application/pdf");
     state.dirty = false;
     scheduleAutosave();
     setStatus(`Exported ${name} (${state.pages.length} page(s))`);
-    toast(`Exported ${name}`);
+    toast(state.exportPassword ? `Exported ${name} 🔒 (password-protected)` : `Exported ${name}`);
   } catch (e) {
     console.error(e);
     setStatus("Export failed: " + e.message, true);
@@ -1707,9 +1793,20 @@ function wireProps() {
 // ---------------------------------------------------------------- tools ----
 
 function setTool(tool) {
+  const wasTextSelect = state.tool === "textselect";
   state.tool = tool;
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
   pageColumn.dataset.tool = tool;
+  if (tool === "textselect") {
+    state.selId = null;
+    closeTextEditor(true);
+    refreshTextLayers();
+    pageViews.forEach((_, i) => renderOverlayFor(i));
+  } else if (wasTextSelect) {
+    // Drop any lingering selection when leaving text-select mode.
+    const sel = window.getSelection && window.getSelection();
+    if (sel) sel.removeAllRanges();
+  }
   updatePropsPanel();
 }
 
@@ -2309,6 +2406,97 @@ function wireSignatures() {
   });
 }
 
+// ------------------------------------------------------- export password ----
+
+function updateLockButton() {
+  const btn = $("btnLock");
+  const on = !!state.exportPassword;
+  btn.classList.toggle("locked", on);
+  btn.textContent = on ? "🔒" : "🔓";
+  btn.title = on ? "Exports are password-protected — click to change" : "Password-protect the exported PDF";
+}
+
+function wireLock() {
+  const show = () => {
+    $("lockPass").value = state.exportPassword || "";
+    $("lockPass2").value = state.exportPassword || "";
+    $("lockMsg").textContent = "";
+    $("lockRemove").classList.toggle("hidden", !state.exportPassword);
+    $("lockModal").classList.remove("hidden");
+    $("lockPass").focus();
+  };
+  $("btnLock").addEventListener("click", show);
+  $("lockShow").addEventListener("change", () => {
+    const t = $("lockShow").checked ? "text" : "password";
+    $("lockPass").type = t;
+    $("lockPass2").type = t;
+  });
+  $("lockSet").addEventListener("click", () => {
+    const p1 = $("lockPass").value;
+    const p2 = $("lockPass2").value;
+    const msg = $("lockMsg");
+    msg.classList.remove("ok");
+    if (!p1) { msg.textContent = "Enter a password, or click Remove."; return; }
+    if (p1 !== p2) { msg.textContent = "Passwords don't match."; return; }
+    state.exportPassword = p1;
+    updateLockButton();
+    $("lockModal").classList.add("hidden");
+    toast("Exports will be password-protected 🔒");
+  });
+  $("lockRemove").addEventListener("click", () => {
+    state.exportPassword = null;
+    updateLockButton();
+    $("lockModal").classList.add("hidden");
+    toast("Password protection removed");
+  });
+}
+
+// ------------------------------------------------------- electron bridge ----
+
+/** When running inside the Electron shell, window.pdflover is exposed by the
+    preload script. It lets the OS open a .pdf directly in PDFLover and drives
+    the native menu. No-op in the browser. */
+function wireElectron() {
+  const api = window.pdflover;
+  if (!api) return;
+
+  const openBytes = async (bytes, name) => {
+    if (!bytes) return;
+    if (!confirmDiscard()) return;
+    try {
+      await openPdfBytes(new Uint8Array(bytes), name || "document.pdf");
+      toast(`Opened ${name || "document"}`);
+    } catch (e) {
+      console.error(e);
+      toast("Could not open file: " + e.message, { error: true });
+    }
+  };
+
+  // A file the OS asked us to open at launch.
+  if (api.getInitialFile) {
+    api.getInitialFile().then((f) => { if (f) openBytes(f.bytes, f.name); });
+  }
+  // Files opened while the app is already running.
+  if (api.onOpenFile) api.onOpenFile((f) => openBytes(f.bytes, f.name));
+
+  // Native menu actions routed to existing handlers.
+  if (api.onMenu) {
+    api.onMenu((action) => {
+      const map = {
+        new: () => $("btnNew").click(),
+        open: () => $("btnOpen").click(),
+        export: exportPdf,
+        print: printDocument,
+        find: openSearch,
+        undo, redo,
+        convert: () => $("btnConvert").click(),
+        ocr: () => $("btnOcr").click(),
+      };
+      if (map[action]) map[action]();
+    });
+  }
+}
+
 // --------------------------------------------------------------- wiring ----
 
 function confirmDiscard() {
@@ -2417,7 +2605,7 @@ function wireTools() {
 }
 
 const TOOL_KEYS = {
-  v: "select", t: "text", p: "draw", h: "highlight", r: "rect",
+  v: "select", x: "textselect", t: "text", p: "draw", h: "highlight", r: "rect",
   e: "ellipse", l: "line", a: "arrow", w: "whiteout",
 };
 
@@ -2476,6 +2664,8 @@ window.addEventListener("DOMContentLoaded", () => {
   wireDragDrop();
   wireSignatures();
   wireSearch();
+  wireLock();
+  if (typeof wireElectron === "function") wireElectron();
 
   // Ctrl+scroll zooms toward the page.
   viewer.addEventListener("wheel", (e) => {

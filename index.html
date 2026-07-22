@@ -45,6 +45,7 @@
   <div class="topbar-spacer"></div>
 
   <input id="docName" class="doc-name" value="document" spellcheck="false" title="Document name">
+  <button id="btnLock" class="tb-btn icon" title="Password-protect the exported PDF">🔓</button>
   <button id="btnExport" class="tb-btn primary" title="Export the finished PDF (Ctrl+S)">⬇ Export PDF</button>
 </header>
 
@@ -52,6 +53,7 @@
 <div class="toolrow">
   <div class="tools" id="tools">
     <button class="tool active" data-tool="select"  title="Select / move / resize (V)">🖱 <span>Select</span></button>
+    <button class="tool" data-tool="textselect" title="Select &amp; copy text from the page (X)">⌶ <span>Select Text</span></button>
     <button class="tool" data-tool="text"      title="Add text (T)">𝐓 <span>Text</span></button>
     <button class="tool" data-tool="draw"      title="Freehand pen (P)">✏️ <span>Draw</span></button>
     <button class="tool" data-tool="highlight" title="Highlighter (H)">🖍 <span>Highlight</span></button>
@@ -287,6 +289,7 @@
     <div class="modal-body">
       <table class="help-table">
         <tr><td><b>V T P H R E L A W</b></td><td>Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout</td></tr>
+        <tr><td><b>X</b></td><td>Select &amp; copy text from the page</td></tr>
         <tr><td><b>I</b> / <b>S</b></td><td>Insert image / Place signature</td></tr>
         <tr><td><b>Ctrl+F</b></td><td>Find in document</td></tr>
         <tr><td><b>Ctrl+P</b></td><td>Print</td></tr>
@@ -299,6 +302,28 @@
         <tr><td><b>Ctrl+Scroll</b></td><td>Zoom</td></tr>
         <tr><td><b>?</b></td><td>This help</td></tr>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= PASSWORD MODAL ======================= -->
+<div class="modal-backdrop hidden" id="lockModal">
+  <div class="modal small">
+    <div class="modal-head"><h2>🔒 Password-protect export</h2><button class="modal-close" data-close="lockModal">✕</button></div>
+    <div class="modal-body">
+      <p class="hint">Set a password to encrypt the exported PDF (AES-128). Anyone opening the file will need it. Leave blank and click Remove to turn protection off.</p>
+      <label class="field"><span>Password</span>
+        <input type="password" id="lockPass" placeholder="Enter a password" autocomplete="new-password">
+      </label>
+      <label class="field"><span>Confirm password</span>
+        <input type="password" id="lockPass2" placeholder="Re-enter the password" autocomplete="new-password">
+      </label>
+      <label class="checkline"><input type="checkbox" id="lockShow"> <span>Show password</span></label>
+      <p class="lock-msg" id="lockMsg"></p>
+      <div class="conv-actions">
+        <button id="lockSet" class="tb-btn primary">Protect exports</button>
+        <button id="lockRemove" class="tb-btn">Remove protection</button>
+      </div>
     </div>
   </div>
 </div>

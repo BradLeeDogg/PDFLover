@@ -42,16 +42,11 @@ const UNDO_LIMIT = 60;
 
 const $ = (id) => document.getElementById(id);
 const viewer = $("viewer");
-const pageWrap = $("pageWrap");
-const pageCanvas = $("pageCanvas");
-const overlayCanvas = $("overlayCanvas");
+const pageColumn = $("pageColumn");
 const textEditor = $("textEditor");
-const pageCtx = pageCanvas.getContext("2d");
-const overlayCtx = overlayCanvas.getContext("2d");
 const measureCtx = document.createElement("canvas").getContext("2d");
 
-let renderSeq = 0;          // guards against stale async page renders
-let renderTask = null;      // active pdf.js render task for the main canvas
+let pageViews = [];         // per page: { wrap, canvas, overlay, key, task }
 let thumbSeq = 0;
 let editingId = null;       // text object currently being edited
 let whiteoutWarned = false; // one-time whiteout privacy note per session
@@ -292,65 +287,135 @@ function updateUndoButtons() {
 
 function refreshAll() {
   clearSearchMatches();   // structural changes invalidate match positions
-  renderPage();
+  buildPageViews();
   rebuildThumbs();
   updatePageLabel();
   updateUndoButtons();
   updatePropsPanel();
 }
 
-async function renderPage() {
-  const page = curPage();
-  if (!page) return;
-  const seq = ++renderSeq;
+// ---- continuous-scroll page views ----
+
+function buildPageViews() {
+  closeTextEditor(true);
+  pageColumn.innerHTML = "";
+  pageViews = state.pages.map((page, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "page-wrap";
+    wrap.dataset.index = i;
+    const canvas = document.createElement("canvas");
+    canvas.className = "page-canvas";
+    const overlay = document.createElement("canvas");
+    overlay.className = "overlay-canvas";
+    wrap.appendChild(canvas);
+    wrap.appendChild(overlay);
+    wireOverlayEvents(overlay, i);
+    pageColumn.appendChild(wrap);
+    return { wrap, canvas, overlay, key: null, task: null };
+  });
+  layoutPageViews();
+  renderVisiblePages();
+}
+
+/** Give every page wrap its final CSS size so the scrollbar is correct
+    before lazy rendering fills the canvases in. */
+function layoutPageViews() {
+  const z = state.zoom;
+  state.pages.forEach((page, i) => {
+    const { w, h } = displayDims(page);
+    pageViews[i].wrap.style.width = w * z + "px";
+    pageViews[i].wrap.style.height = h * z + "px";
+  });
+}
+
+async function renderView(i) {
+  const page = state.pages[i];
+  const v = pageViews[i];
+  if (!page || !v) return;
   const dpr = window.devicePixelRatio || 1;
   const { w, h } = displayDims(page);
-  const zoom = state.zoom;
+  const key = `${page.id}|${state.zoom}|${totalRot(page)}|${dpr}`;
+  if (v.key === key) { renderOverlayFor(i); return; }
+  v.key = key;
+  const z = state.zoom;
+  v.canvas.width = Math.round(w * z * dpr);
+  v.canvas.height = Math.round(h * z * dpr);
+  v.canvas.style.width = w * z + "px";
+  v.canvas.style.height = h * z + "px";
+  v.overlay.width = v.canvas.width;
+  v.overlay.height = v.canvas.height;
+  v.overlay.style.width = v.canvas.style.width;
+  v.overlay.style.height = v.canvas.style.height;
 
-  pageCanvas.width = Math.round(w * zoom * dpr);
-  pageCanvas.height = Math.round(h * zoom * dpr);
-  pageCanvas.style.width = w * zoom + "px";
-  pageCanvas.style.height = h * zoom + "px";
-  overlayCanvas.width = pageCanvas.width;
-  overlayCanvas.height = pageCanvas.height;
-  overlayCanvas.style.width = pageCanvas.style.width;
-  overlayCanvas.style.height = pageCanvas.style.height;
-  pageWrap.style.width = pageCanvas.style.width;
-  pageWrap.style.height = pageCanvas.style.height;
-
-  pageCtx.setTransform(1, 0, 0, 1, 0, 0);
-  pageCtx.fillStyle = "#ffffff";
-  pageCtx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+  const ctx = v.canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, v.canvas.width, v.canvas.height);
 
   if (page.src) {
     const proxy = state.sources[page.src.s].proxies[page.src.p];
-    const vp = proxy.getViewport({ scale: zoom * dpr, rotation: totalRot(page) });
-    if (renderTask) renderTask.cancel();
+    const vp = proxy.getViewport({ scale: z * dpr, rotation: totalRot(page) });
+    if (v.task) { try { v.task.cancel(); } catch (e) { /* already done */ } }
     // ENABLE_FORMS excludes form widget appearances; we draw live values ourselves.
-    renderTask = proxy.render({ canvasContext: pageCtx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS });
+    v.task = proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS });
     try {
-      await renderTask.promise;
+      await v.task.promise;
     } catch (e) {
       if (e && e.name !== "RenderingCancelledException") console.error(e);
+      v.key = null;   // retry on next pass
     }
-    if (seq !== renderSeq) return;
-    renderTask = null;
+    v.task = null;
   }
-  renderOverlay();
+  renderOverlayFor(i);
 }
 
-function renderOverlay() {
-  const page = curPage();
-  if (!page) return;
+/** Render pages near the viewport; distant pages stay as white placeholders. */
+function renderVisiblePages() {
+  const top = viewer.scrollTop - 900;
+  const bottom = viewer.scrollTop + viewer.clientHeight + 900;
+  pageViews.forEach((v, i) => {
+    const y0 = v.wrap.offsetTop;
+    if (y0 + v.wrap.offsetHeight >= top && y0 <= bottom) renderView(i);
+  });
+}
+
+function renderOverlayFor(i) {
+  const page = state.pages[i];
+  const v = pageViews[i];
+  if (!page || !v || !v.overlay.width) return;
   const dpr = window.devicePixelRatio || 1;
   const s = state.zoom * dpr;
-  overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
-  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  overlayCtx.setTransform(s, 0, 0, s, 0, 0);
-  drawFormFields(overlayCtx, page);
-  drawObjects(overlayCtx, page, editingId);
-  drawSearchHighlights(overlayCtx);
-  drawSelection(overlayCtx, page);
+  const ctx = v.overlay.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, v.overlay.width, v.overlay.height);
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  drawFormFields(ctx, page);
+  drawObjects(ctx, page, i === state.current ? editingId : null);
+  drawSearchHighlightsFor(ctx, i);
+  if (i === state.current) drawSelection(ctx, page);
+}
+
+function renderOverlay() { renderOverlayFor(state.current); }
+
+/** Track which page is "current" as the user scrolls. */
+function updateCurrentFromScroll() {
+  if (!pageViews.length) return;
+  const center = viewer.scrollTop + viewer.clientHeight / 2;
+  let best = 0, bestD = Infinity;
+  pageViews.forEach((v, i) => {
+    const d = Math.abs(v.wrap.offsetTop + v.wrap.offsetHeight / 2 - center);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  if (best !== state.current) {
+    const prev = state.current;
+    closeTextEditor(true);
+    state.current = best;
+    updatePageLabel();
+    updateThumbActive();
+    updatePropsPanel();
+    renderOverlayFor(prev);   // hide selection outline on the old page
+    renderOverlayFor(best);
+  }
 }
 
 /** Full render of one page (background + form fields + objects) at a given
@@ -648,17 +713,36 @@ function hitObject(page, dx, dy) {
 // --------------------------------------------------------- interactions ----
 
 function eventPoint(e) {
-  const rect = overlayCanvas.getBoundingClientRect();
+  const rect = e.currentTarget.getBoundingClientRect();
   return { x: (e.clientX - rect.left) / state.zoom, y: (e.clientY - rect.top) / state.zoom };
 }
 
-overlayCanvas.addEventListener("pointerdown", (e) => {
+function wireOverlayEvents(overlay, pageIndex) {
+  overlay.addEventListener("pointerdown", (e) => onOverlayPointerDown(e, pageIndex));
+  overlay.addEventListener("pointermove", onOverlayPointerMove);
+  overlay.addEventListener("pointerup", onOverlayPointerUp);
+  overlay.addEventListener("dblclick", onOverlayDblClick);
+}
+
+function makePageCurrent(i) {
+  if (i === state.current) return;
+  const prev = state.current;
+  closeTextEditor(true);
+  state.current = i;
+  updatePageLabel();
+  updateThumbActive();
+  updatePropsPanel();
+  renderOverlayFor(prev);
+}
+
+function onOverlayPointerDown(e, pageIndex) {
   if (e.button !== 0) return;
+  makePageCurrent(pageIndex);
   const page = curPage();
   if (!page) return;
   if (editingId) { closeTextEditor(true); return; }
   const { x, y } = eventPoint(e);
-  overlayCanvas.setPointerCapture(e.pointerId);
+  e.currentTarget.setPointerCapture(e.pointerId);
   const snap = snapshot();
 
   if (state.tool === "select") {
@@ -742,16 +826,17 @@ overlayCanvas.addEventListener("pointerdown", (e) => {
     page.objects.push(o);
     drag = { mode: "create", obj: o, startX: x, startY: y, snap };
   }
-});
+}
 
-overlayCanvas.addEventListener("pointermove", (e) => {
+function onOverlayPointerMove(e) {
   if (!drag) {
     // Hover feedback for fillable form fields in select mode.
     if (state.tool === "select") {
-      const page = curPage();
+      const i = parseInt(e.currentTarget.parentNode.dataset.index, 10);
+      const page = state.pages[i];
       const { x, y } = eventPoint(e);
-      const f = page && !hitObject(page, x, y) ? hitField(page, x, y) : null;
-      overlayCanvas.style.cursor = f && !f.readOnly
+      const f = page && i === state.current && !hitObject(page, x, y) ? hitField(page, x, y) : null;
+      e.currentTarget.style.cursor = f && !f.readOnly
         ? (f.type === "text" ? "text" : "pointer")
         : "";
     }
@@ -778,9 +863,9 @@ overlayCanvas.addEventListener("pointermove", (e) => {
     resizeObject(o, drag.orig, drag.handle, x - drag.startX, y - drag.startY);
   }
   renderOverlay();
-});
+}
 
-overlayCanvas.addEventListener("pointerup", () => {
+function onOverlayPointerUp() {
   if (!drag) return;
   const page = curPage();
   const o = drag.obj;
@@ -810,9 +895,9 @@ overlayCanvas.addEventListener("pointerup", () => {
   renderOverlay();
   scheduleThumb();
   updatePropsPanel();
-});
+}
 
-overlayCanvas.addEventListener("dblclick", (e) => {
+function onOverlayDblClick(e) {
   const page = curPage();
   if (!page) return;
   const { x, y } = eventPoint(e);
@@ -821,7 +906,7 @@ overlayCanvas.addEventListener("dblclick", (e) => {
     state.selId = hit.id;
     openTextEditor(hit, snapshot());
   }
-});
+}
 
 function moveObject(o, orig, ddx, ddy) {
   if (o.type === "line" || o.type === "arrow") {
@@ -895,6 +980,7 @@ function openTextEditor(o, snap) {
   editingId = o.id;
   textEditor._snap = snap;
   textEditor.value = o.text;
+  if (pageViews[state.current]) pageViews[state.current].wrap.appendChild(textEditor);
   textEditor.style.left = o.x * state.zoom + "px";
   textEditor.style.top = o.y * state.zoom + "px";
   textEditor.style.font = fontString(o, state.zoom);
@@ -925,6 +1011,7 @@ function openFieldEditor(page, f) {
   fieldEdit = { key: fieldKey(page, f), snap: snapshot(), multiLine: f.multiLine };
   const fs = f.fontSize || Math.min(Math.max(r.h * 0.55, 7), 13);
   textEditor.value = String(state.formValues[fieldEdit.key] ?? "");
+  if (pageViews[state.current]) pageViews[state.current].wrap.appendChild(textEditor);
   textEditor.style.left = r.x * state.zoom + "px";
   textEditor.style.top = r.y * state.zoom + "px";
   textEditor.style.width = r.w * state.zoom + "px";
@@ -957,7 +1044,8 @@ function openChoiceEditor(page, f) {
   sel.style.top = r.y * state.zoom + "px";
   sel.style.width = Math.max(60, r.w * state.zoom) + "px";
   sel.style.height = Math.max(20, r.h * state.zoom) + "px";
-  pageWrap.appendChild(sel);
+  if (pageViews[state.current]) pageViews[state.current].wrap.appendChild(sel);
+  else return;
   sel.addEventListener("change", () => {
     pushSnap(snap);
     state.formValues[key] = sel.value;
@@ -1095,13 +1183,10 @@ function movePageTo(from, to) {
 
 function gotoPage(i) {
   if (i < 0 || i >= state.pages.length || i === state.current) return;
-  closeTextEditor(true);
-  state.current = i;
+  makePageCurrent(i);
   state.selId = null;
-  renderPage();
-  updatePageLabel();
-  updateThumbActive();
-  updatePropsPanel();
+  if (pageViews[i]) viewer.scrollTo({ top: Math.max(0, pageViews[i].wrap.offsetTop - 20) });
+  renderVisiblePages();
 }
 
 function updatePageLabel() {
@@ -1616,7 +1701,7 @@ function wireProps() {
 function setTool(tool) {
   state.tool = tool;
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
-  pageWrap.dataset.tool = tool;
+  pageColumn.dataset.tool = tool;
   updatePropsPanel();
 }
 
@@ -1659,10 +1744,14 @@ async function placeImageFile(file) {
 // ----------------------------------------------------------------- zoom ----
 
 function setZoom(z) {
+  const prevMax = Math.max(1, viewer.scrollHeight - viewer.clientHeight);
+  const frac = viewer.scrollTop / prevMax;
   state.zoom = clamp(z, 0.25, 4);
   $("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
   closeTextEditor(true);
-  renderPage();
+  layoutPageViews();
+  viewer.scrollTop = frac * Math.max(1, viewer.scrollHeight - viewer.clientHeight);
+  renderVisiblePages();
 }
 
 function zoomFit() {
@@ -1778,26 +1867,32 @@ async function runSearch(query) {
   }
   updateSearchUI();
   if (search.matches.length) gotoMatch(0);
-  else renderOverlay();
+  else pageViews.forEach((_, i) => renderOverlayFor(i));
 }
 
 function gotoMatch(i) {
   const n = search.matches.length;
   if (!n) return;
+  const prevPage = search.cur >= 0 ? search.matches[search.cur].pageIndex : -1;
   search.cur = ((i % n) + n) % n;
   const m = search.matches[search.cur];
-  if (m.pageIndex !== state.current) gotoPage(m.pageIndex);
-  else renderOverlay();
+  makePageCurrent(m.pageIndex);
   const r = m.rects[0];
-  viewer.scrollTo({ top: Math.max(0, r.y * state.zoom - viewer.clientHeight / 3), behavior: "smooth" });
+  const wrap = pageViews[m.pageIndex] && pageViews[m.pageIndex].wrap;
+  if (wrap) {
+    viewer.scrollTo({ top: Math.max(0, wrap.offsetTop + r.y * state.zoom - viewer.clientHeight / 3), behavior: "smooth" });
+  }
+  renderVisiblePages();
+  if (prevPage >= 0 && prevPage !== m.pageIndex) renderOverlayFor(prevPage);
+  renderOverlayFor(m.pageIndex);
   updateSearchUI();
 }
 
-function drawSearchHighlights(ctx) {
+function drawSearchHighlightsFor(ctx, pageIndex) {
   if (!search.matches.length) return;
   ctx.save();
   search.matches.forEach((m, i) => {
-    if (m.pageIndex !== state.current) return;
+    if (m.pageIndex !== pageIndex) return;
     ctx.fillStyle = i === search.cur ? "rgba(242,118,28,0.5)" : "rgba(255,222,0,0.35)";
     for (const r of m.rects) ctx.fillRect(r.x, r.y - 1, r.w, r.h + 2);
   });
@@ -1821,7 +1916,7 @@ function closeSearch() {
   search.query = "";
   search.matches = [];
   search.cur = -1;
-  renderOverlay();
+  pageViews.forEach((_, i) => renderOverlayFor(i));
 }
 
 function clearSearchMatches() {
@@ -2359,6 +2454,18 @@ window.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     setZoom(state.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
   }, { passive: false });
+
+  // Lazy-render pages and track the current page while scrolling.
+  let scrollTick = false;
+  viewer.addEventListener("scroll", () => {
+    if (scrollTick) return;
+    scrollTick = true;
+    requestAnimationFrame(() => {
+      scrollTick = false;
+      renderVisiblePages();
+      updateCurrentFromScroll();
+    });
+  });
 
   setTool("select");
   newDocument("letter", "portrait");

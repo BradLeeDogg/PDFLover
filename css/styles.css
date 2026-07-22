@@ -191,30 +191,44 @@ body { display: flex; flex-direction: column; }
     radial-gradient(circle at 50% 0%, #1c1f26 0%, var(--bg) 70%);
 }
 
-.page-wrap {
-  position: relative;
-  box-shadow: 0 4px 24px rgba(0,0,0,.6);
+#pageColumn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
   flex-shrink: 0;
 }
 
-#pageCanvas { display: block; background: #fff; }
+.page-wrap {
+  position: relative;
+  box-shadow: 0 4px 24px rgba(0,0,0,.6);
+  background: #fff;   /* placeholder before lazy render */
+  flex-shrink: 0;
+}
 
-#overlayCanvas {
+.page-canvas {
+  position: absolute;
+  left: 0; top: 0;
+  display: block;
+  background: #fff;
+}
+
+.overlay-canvas {
   position: absolute;
   left: 0; top: 0;
   touch-action: none;
 }
 
-/* cursor per tool, set via data attribute on wrap */
-.page-wrap[data-tool="select"]    #overlayCanvas { cursor: default; }
-.page-wrap[data-tool="text"]      #overlayCanvas { cursor: text; }
-.page-wrap[data-tool="draw"]      #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="highlight"] #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="rect"]      #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="ellipse"]   #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="line"]      #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="arrow"]     #overlayCanvas { cursor: crosshair; }
-.page-wrap[data-tool="whiteout"]  #overlayCanvas { cursor: crosshair; }
+/* cursor per tool, set via data attribute on the page column */
+#pageColumn[data-tool="select"]    .overlay-canvas { cursor: default; }
+#pageColumn[data-tool="text"]      .overlay-canvas { cursor: text; }
+#pageColumn[data-tool="draw"]      .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="highlight"] .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="rect"]      .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="ellipse"]   .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="line"]      .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="arrow"]     .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="whiteout"]  .overlay-canvas { cursor: crosshair; }
 
 #textEditor {
   position: absolute;

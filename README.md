@@ -66,6 +66,7 @@ python3 -m http.server 8080
 - One click stamps it on the page; drag and resize into position
 
 ### 🧭 Navigate & produce
+- **Continuous scrolling** — all pages in one smooth scroll, rendered lazily as you go; the page indicator and thumbnails track your position
 - **Find in document** (`Ctrl+F`) with match highlights and next/previous navigation
 - **Print** (`Ctrl+P`) — pages print exactly as shown, including fills and annotations
 - **Copy / paste / duplicate** objects (`Ctrl+C / V / D`)

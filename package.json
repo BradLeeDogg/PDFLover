@@ -3,7 +3,7 @@
   "productName": "PDFLover",
   "version": "1.0.0",
   "description": "All-in-one PDF creator, editor, and converter — runs fully offline",
-  "author": "BradLeeDogg",
+  "author": "BradLeeDogg <115397302+BradLeeDogg@users.noreply.github.com>",
   "license": "MIT",
   "main": "electron/main.js",
   "scripts": {

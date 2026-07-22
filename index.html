@@ -20,6 +20,7 @@
     <button id="btnOpen" class="tb-btn" title="Open a PDF for editing">📂 Open</button>
     <button id="btnInsert" class="tb-btn" title="Append pages from another PDF to this document">➕ Insert PDF</button>
     <button id="btnConvert" class="tb-btn" title="File conversion tools">🔁 Convert</button>
+    <button id="btnOcr" class="tb-btn" title="Recognize text in scanned pages so they become searchable (OCR)">🅰 OCR</button>
   </div>
 
   <div class="topbar-group">
@@ -125,11 +126,8 @@
       <button id="searchNext" title="Next match (Enter)">›</button>
       <button id="searchClose" title="Close (Esc)">✕</button>
     </div>
-    <div class="page-wrap" id="pageWrap">
-      <canvas id="pageCanvas"></canvas>
-      <canvas id="overlayCanvas"></canvas>
-      <textarea id="textEditor" class="hidden" spellcheck="false"></textarea>
-    </div>
+    <div id="pageColumn"></div>
+    <textarea id="textEditor" class="hidden" spellcheck="false"></textarea>
   </section>
 </div>
 
@@ -316,8 +314,10 @@
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
+<script src="vendor/tesseract/tesseract.min.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/editor.js"></script>
+<script src="js/ocr.js"></script>
 <script src="js/converter.js"></script>
 </body>
 </html>

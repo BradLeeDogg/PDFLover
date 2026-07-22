@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDFLover — PDF Creator, Editor &amp; Converter</title>
+<link rel="stylesheet" href="css/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>❤️</text></svg>">
+</head>
+<body>
+
+<!-- ======================= TOP BAR ======================= -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">PDF</span><span class="brand-heart">Lover</span>
+  </div>
+
+  <div class="topbar-group">
+    <button id="btnNew" class="tb-btn" title="Create a new blank PDF">🗎 New</button>
+    <button id="btnOpen" class="tb-btn" title="Open a PDF for editing">📂 Open</button>
+    <button id="btnInsert" class="tb-btn" title="Append pages from another PDF to this document">➕ Insert PDF</button>
+    <button id="btnConvert" class="tb-btn" title="File conversion tools">🔁 Convert</button>
+  </div>
+
+  <div class="topbar-group">
+    <button id="btnUndo" class="tb-btn icon" title="Undo (Ctrl+Z)">↩</button>
+    <button id="btnRedo" class="tb-btn icon" title="Redo (Ctrl+Y)">↪</button>
+  </div>
+
+  <div class="topbar-group">
+    <button id="btnZoomOut" class="tb-btn icon" title="Zoom out">−</button>
+    <span id="zoomLabel" class="zoom-label">125%</span>
+    <button id="btnZoomIn" class="tb-btn icon" title="Zoom in">＋</button>
+    <button id="btnZoomFit" class="tb-btn icon" title="Fit width">⤢</button>
+  </div>
+
+  <div class="topbar-spacer"></div>
+
+  <input id="docName" class="doc-name" value="document" spellcheck="false" title="Document name">
+  <button id="btnExport" class="tb-btn primary" title="Export the finished PDF (Ctrl+S)">⬇ Export PDF</button>
+</header>
+
+<!-- ======================= TOOL BAR ======================= -->
+<div class="toolrow">
+  <div class="tools" id="tools">
+    <button class="tool active" data-tool="select"  title="Select / move / resize (V)">🖱 <span>Select</span></button>
+    <button class="tool" data-tool="text"      title="Add text (T)">𝐓 <span>Text</span></button>
+    <button class="tool" data-tool="draw"      title="Freehand pen (P)">✏️ <span>Draw</span></button>
+    <button class="tool" data-tool="highlight" title="Highlighter (H)">🖍 <span>Highlight</span></button>
+    <button class="tool" data-tool="rect"      title="Rectangle (R)">▭ <span>Rect</span></button>
+    <button class="tool" data-tool="ellipse"   title="Ellipse (E)">◯ <span>Ellipse</span></button>
+    <button class="tool" data-tool="line"      title="Line (L)">╱ <span>Line</span></button>
+    <button class="tool" data-tool="arrow"     title="Arrow (A)">➔ <span>Arrow</span></button>
+    <button class="tool" data-tool="whiteout"  title="Whiteout — cover existing content (W)">▉ <span>Whiteout</span></button>
+    <button class="tool-btn" id="btnAddImage"  title="Insert an image onto the page (I)">🖼 <span>Image</span></button>
+  </div>
+
+  <div class="props" id="props">
+    <label class="prop" id="propColorWrap" title="Color">
+      <span>Color</span><input type="color" id="propColor" value="#e33d3d">
+    </label>
+    <label class="prop" id="propFillWrap" title="Fill color">
+      <span>Fill</span><input type="color" id="propFill" value="#ffe066">
+      <input type="checkbox" id="propFillOn" title="Toggle fill">
+    </label>
+    <label class="prop" id="propWidthWrap" title="Stroke width">
+      <span>Width</span><input type="range" id="propWidth" min="1" max="24" step="1" value="3">
+      <b id="propWidthVal">3</b>
+    </label>
+    <label class="prop" id="propSizeWrap" title="Font size">
+      <span>Size</span><input type="number" id="propSize" min="6" max="144" step="1" value="16">
+    </label>
+    <label class="prop" id="propFontWrap" title="Font family">
+      <span>Font</span>
+      <select id="propFont">
+        <option value="Helvetica">Helvetica</option>
+        <option value="Times">Times</option>
+        <option value="Courier">Courier</option>
+      </select>
+    </label>
+    <span class="prop" id="propStyleWrap">
+      <button id="propBold" class="style-btn" title="Bold"><b>B</b></button>
+      <button id="propItalic" class="style-btn" title="Italic"><i>I</i></button>
+    </span>
+    <label class="prop" id="propOpacityWrap" title="Opacity">
+      <span>Opacity</span><input type="range" id="propOpacity" min="10" max="100" step="5" value="100">
+      <b id="propOpacityVal">100%</b>
+    </label>
+    <button id="btnDeleteObj" class="tb-btn danger hidden" title="Delete selected object (Del)">🗑 Delete</button>
+  </div>
+</div>
+
+<!-- ======================= MAIN ======================= -->
+<div class="main">
+
+  <!-- Page sidebar -->
+  <aside class="sidebar">
+    <div class="page-actions">
+      <button id="pgAdd"     title="Add blank page after current">＋</button>
+      <button id="pgDup"     title="Duplicate current page">⧉</button>
+      <button id="pgRotL"    title="Rotate page left">⟲</button>
+      <button id="pgRotR"    title="Rotate page right">⟳</button>
+      <button id="pgUp"      title="Move page up">▲</button>
+      <button id="pgDown"    title="Move page down">▼</button>
+      <button id="pgExtract" title="Export current page as its own PDF">⇱</button>
+      <button id="pgDelete"  title="Delete current page" class="danger">🗑</button>
+    </div>
+    <div id="thumbs" class="thumbs"></div>
+  </aside>
+
+  <!-- Viewer -->
+  <section class="viewer" id="viewer">
+    <div class="page-wrap" id="pageWrap">
+      <canvas id="pageCanvas"></canvas>
+      <canvas id="overlayCanvas"></canvas>
+      <textarea id="textEditor" class="hidden" spellcheck="false"></textarea>
+    </div>
+  </section>
+</div>
+
+<!-- Page nav footer -->
+<footer class="pagenav">
+  <button id="navPrev" title="Previous page">‹</button>
+  <span id="pageLabel">Page 1 / 1</span>
+  <button id="navNext" title="Next page">›</button>
+  <span class="status" id="status"></span>
+</footer>
+
+<!-- ======================= NEW DOC MODAL ======================= -->
+<div class="modal-backdrop hidden" id="newModal">
+  <div class="modal small">
+    <div class="modal-head"><h2>New PDF</h2><button class="modal-close" data-close="newModal">✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Page size</span>
+        <select id="newSize">
+          <option value="letter">Letter (8.5 × 11 in)</option>
+          <option value="a4">A4 (210 × 297 mm)</option>
+          <option value="legal">Legal (8.5 × 14 in)</option>
+          <option value="a5">A5 (148 × 210 mm)</option>
+        </select>
+      </label>
+      <label class="field"><span>Orientation</span>
+        <select id="newOrient">
+          <option value="portrait">Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+      </label>
+      <button id="newCreate" class="tb-btn primary wide">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= CONVERTER MODAL ======================= -->
+<div class="modal-backdrop hidden" id="convModal">
+  <div class="modal">
+    <div class="modal-head"><h2>🔁 Converter</h2><button class="modal-close" data-close="convModal">✕</button></div>
+    <div class="modal-body">
+
+      <div class="conv-grid" id="convGrid">
+        <button class="conv-card" data-pane="paneImg2Pdf">🖼→🗎<b>Images to PDF</b><span>Combine PNG/JPG/WebP images into one PDF</span></button>
+        <button class="conv-card" data-pane="panePdf2Img">🗎→🖼<b>PDF to Images</b><span>Render every page to PNG or JPEG</span></button>
+        <button class="conv-card" data-pane="paneTxt2Pdf">𝐓→🗎<b>Text to PDF</b><span>Turn plain text into a paginated PDF</span></button>
+        <button class="conv-card" data-pane="panePdf2Txt">🗎→𝐓<b>PDF to Text</b><span>Extract all text from a PDF</span></button>
+        <button class="conv-card" data-pane="paneMerge">🗎🗎→🗎<b>Merge PDFs</b><span>Join multiple PDFs into one</span></button>
+        <button class="conv-card" data-pane="paneSplit">🗎→🗎🗎<b>Split PDF</b><span>Break a PDF into page ranges</span></button>
+      </div>
+
+      <div class="conv-pane hidden" id="paneImg2Pdf">
+        <h3>Images to PDF</h3>
+        <input type="file" id="convImgFiles" accept="image/png,image/jpeg,image/webp" multiple>
+        <p class="hint">Each image becomes one page, sized to the image. Files are added in the order selected.</p>
+        <div class="conv-actions">
+          <button class="tb-btn primary" id="convImg2PdfGo">Convert &amp; Download</button>
+          <button class="tb-btn" id="convImg2PdfOpen">Convert &amp; Open in Editor</button>
+        </div>
+      </div>
+
+      <div class="conv-pane hidden" id="panePdf2Img">
+        <h3>PDF to Images</h3>
+        <input type="file" id="convP2IFile" accept="application/pdf">
+        <label class="field"><span>Format</span>
+          <select id="convP2IFmt"><option value="png">PNG</option><option value="jpeg">JPEG</option></select>
+        </label>
+        <label class="field"><span>Resolution</span>
+          <select id="convP2IScale"><option value="1">72 dpi</option><option value="2" selected>144 dpi</option><option value="3">216 dpi</option></select>
+        </label>
+        <p class="hint">All pages are rendered and downloaded together as a ZIP.</p>
+        <div class="conv-actions"><button class="tb-btn primary" id="convP2IGo">Convert &amp; Download ZIP</button></div>
+      </div>
+
+      <div class="conv-pane hidden" id="paneTxt2Pdf">
+        <h3>Text to PDF</h3>
+        <input type="file" id="convT2PFile" accept=".txt,text/plain">
+        <p class="hint">…or paste / type text below:</p>
+        <textarea id="convT2PText" rows="6" placeholder="Type or paste text here…"></textarea>
+        <div class="conv-actions">
+          <button class="tb-btn primary" id="convT2PGo">Convert &amp; Download</button>
+          <button class="tb-btn" id="convT2POpen">Convert &amp; Open in Editor</button>
+        </div>
+      </div>
+
+      <div class="conv-pane hidden" id="panePdf2Txt">
+        <h3>PDF to Text</h3>
+        <input type="file" id="convP2TFile" accept="application/pdf">
+        <div class="conv-actions"><button class="tb-btn primary" id="convP2TGo">Extract &amp; Download .txt</button></div>
+      </div>
+
+      <div class="conv-pane hidden" id="paneMerge">
+        <h3>Merge PDFs</h3>
+        <input type="file" id="convMergeFiles" accept="application/pdf" multiple>
+        <p class="hint">PDFs are merged in the order selected.</p>
+        <div class="conv-actions">
+          <button class="tb-btn primary" id="convMergeGo">Merge &amp; Download</button>
+          <button class="tb-btn" id="convMergeOpen">Merge &amp; Open in Editor</button>
+        </div>
+      </div>
+
+      <div class="conv-pane hidden" id="paneSplit">
+        <h3>Split PDF</h3>
+        <input type="file" id="convSplitFile" accept="application/pdf">
+        <label class="field"><span>Page ranges</span>
+          <input type="text" id="convSplitRanges" placeholder="e.g. 1-3, 4, 5-8 (blank = every page separately)">
+        </label>
+        <p class="hint">Each comma-separated range becomes its own PDF; multiple results download as a ZIP.</p>
+        <div class="conv-actions"><button class="tb-btn primary" id="convSplitGo">Split &amp; Download</button></div>
+      </div>
+
+      <p class="conv-status" id="convStatus"></p>
+      <p class="privacy-note">🔒 Everything runs locally in your browser — files never leave your machine.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden file inputs -->
+<input type="file" id="fileOpenPdf"   accept="application/pdf" class="hidden">
+<input type="file" id="fileInsertPdf" accept="application/pdf" class="hidden">
+<input type="file" id="fileAddImage"  accept="image/png,image/jpeg,image/webp" class="hidden">
+
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/converter.js"></script>
+</body>
+</html>

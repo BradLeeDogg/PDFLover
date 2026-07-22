@@ -40,6 +40,12 @@ python3 -m http.server 8080
 - Build pages with text, shapes, images, and freehand drawing
 - Export the finished document as a real PDF
 
+### 📋 Fill in forms
+- Fillable PDFs (AcroForms) are detected automatically — a status hint shows how many fields were found
+- Click a field to type into it; checkboxes, radio buttons, and dropdowns work with a click
+- Pre-filled values are picked up and editable; form edits are part of undo/redo
+- On export the form is **flattened**: your values become permanent page content that every viewer shows identically
+
 ### ✏️ Edit imported PDFs
 - Open any PDF and edit it page by page
 - **Text** — click anywhere to type; Helvetica / Times / Courier, bold, italic, any size & color

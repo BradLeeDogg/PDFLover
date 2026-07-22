@@ -53,6 +53,7 @@ python3 -m http.server 8080
 - **Highlight** — translucent multiply-blended highlighter
 - **Shapes** — rectangles, ellipses, lines, and arrows, with optional fills
 - **Whiteout** — cover up existing content, then type over it
+- **Redact** — permanently remove content: on export the page is flattened to an image with the covered area destroyed (metadata is stripped too)
 - **Images** — place PNG / JPG / WebP images (signatures, stamps, logos)
 - Select, move, resize, restyle, and delete anything you've added
 - Rotate pages — annotations stay pinned, even in the export
@@ -78,8 +79,13 @@ python3 -m http.server 8080
 - **Copy / paste / duplicate** objects (`Ctrl+C / V / D`)
 - Fit-width and fit-page zoom; `?` shows a keyboard shortcut reference
 
-### 🔒 Protect
+### 🔒 Protect & organize
+- **Redact** sensitive content so it's truly gone from the exported file (not just hidden like whiteout)
 - **Password-protect exports** (AES encryption): click the lock next to Export, set a password, and the exported file requires it to open
+- **Metadata**: edit title/author/subject/keywords, or strip all metadata before sharing (⚙ Document)
+- **Watermark** every page (text, color, angle, opacity) with a live preview
+- **Page numbers, headers & footers** with `{n}` / `{total}` placeholders and a start value
+- **Bookmarks / outline**: view and jump to an imported PDF's outline, add your own, and they're written into the exported PDF
 
 ### 🛟 Quality of life
 - **Drag & drop** PDFs or images anywhere onto the window to open/place them
@@ -104,6 +110,7 @@ python3 -m http.server 8080
 |---|---|
 | `V` `T` `P` `H` `R` `E` `L` `A` `W` | Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout |
 | `X` | Select & copy text from the page |
+| `Shift+R` | Redact (permanently remove on export) |
 | `I` / `S` | Insert image / Place signature |
 | `Ctrl+F` | Find in document |
 | `Ctrl+P` | Print |

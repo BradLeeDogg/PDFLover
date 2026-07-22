@@ -23,6 +23,11 @@ const state = {
   dirty: false,
   formValues: {},   // "sourceIndex:fieldName" -> string | boolean
   exportPassword: null,   // when set, exports are AES-encrypted (never autosaved)
+  metadata: { title: "", author: "", subject: "", keywords: "" },
+  stripMetadata: false,
+  watermark: { on: false, text: "DRAFT", color: "#e33d3d", opacity: 0.18, angle: 45, size: 72 },
+  numbering: { on: false, format: "Page {n} of {total}", header: "", pos: "center", start: 1 },
+  bookmarks: [],    // [{ title, pageIndex }]
 };
 
 // Defaults for newly created objects.
@@ -51,6 +56,7 @@ let pageViews = [];         // per page: { wrap, canvas, overlay, key, task }
 let thumbSeq = 0;
 let editingId = null;       // text object currently being edited
 let whiteoutWarned = false; // one-time whiteout privacy note per session
+let redactWarned = false;   // one-time redaction explainer per session
 let drag = null;            // active pointer interaction
 let propSnap = null;        // pending undo snapshot for slider-style edits
 const imageCache = new Map();      // dataUrl -> HTMLImageElement
@@ -208,8 +214,17 @@ function newDocument(sizeKey, orient) {
   state.redoStack = [];
   state.dirty = false;
   state.formValues = {};
+  resetDocSettings();
   imageCache.clear();
   refreshAll();
+}
+
+function resetDocSettings() {
+  state.metadata = { title: "", author: "", subject: "", keywords: "" };
+  state.stripMetadata = false;
+  state.watermark = { on: false, text: "DRAFT", color: "#e33d3d", opacity: 0.18, angle: 45, size: 72 };
+  state.numbering = { on: false, format: "Page {n} of {total}", header: "", pos: "center", start: 1 };
+  state.bookmarks = [];
 }
 
 async function openPdfBytes(bytes, name) {
@@ -221,10 +236,40 @@ async function openPdfBytes(bytes, name) {
   state.undoStack = [];
   state.redoStack = [];
   state.dirty = false;
+  resetDocSettings();
+  await loadExistingOutline(s);
   if (name) $("docName").value = name.replace(/\.pdf$/i, "");
   refreshAll();
+  renderBookmarks();
   const nFields = countFormFields();
   if (nFields) setStatus(`Fillable form detected: ${nFields} field(s) — click a field to fill it in`);
+}
+
+/** Import the source PDF's existing outline into our bookmark list so it can
+    be viewed, navigated, edited, and re-exported. */
+async function loadExistingOutline(s) {
+  try {
+    const doc = state.sources[s].pdfjs;
+    const outline = await doc.getOutline();
+    if (!outline || !outline.length) return;
+    const flat = [];
+    const walk = async (items) => {
+      for (const it of items) {
+        let pageIndex = -1;
+        try {
+          let dest = it.dest;
+          if (typeof dest === "string") dest = await doc.getDestination(dest);
+          if (Array.isArray(dest) && dest[0]) pageIndex = await doc.getPageIndex(dest[0]);
+        } catch (e) { /* unresolved destination */ }
+        if (it.title && pageIndex >= 0) flat.push({ title: it.title.trim(), pageIndex });
+        if (it.items && it.items.length) await walk(it.items);
+      }
+    };
+    await walk(outline);
+    state.bookmarks = flat;
+  } catch (e) {
+    console.warn("Could not read outline:", e.message);
+  }
 }
 
 async function insertPdfBytes(bytes) {
@@ -399,6 +444,10 @@ async function buildTextLayer(i) {
   layer.innerHTML = "";
 
   const entries = [];   // {x,y,w,h,str} in display coords (scale 1)
+  // Don't expose text that sits under a redaction box for selection/copy.
+  const redactions = page.objects.filter((o) => o.type === "redact");
+  const hidden = (x, y, bw, bh) => redactions.some((r) =>
+    x < r.x + r.w && x + bw > r.x && y < r.y + r.h && y + bh > r.y);
   const items = await getPageTextItems(page);
   if (v.textKey !== key) return;   // superseded while awaiting
   if (items && items.length) {
@@ -407,10 +456,12 @@ async function buildTextLayer(i) {
     for (const it of items) {
       if (!it.str || !it.str.trim()) continue;
       const r = itemDisplayRect(vp, it);
+      if (hidden(r.x, r.y, r.w, r.h)) continue;
       entries.push({ x: r.x, y: r.y, w: r.w, h: r.h, str: it.str, eol: it.hasEOL });
     }
   } else if (page.ocrWords) {
     for (const word of page.ocrWords) {
+      if (hidden(word.x, word.y, word.w, word.h)) continue;
       entries.push({ x: word.x, y: word.y, w: word.w, h: word.h, str: word.t, eol: false });
     }
   }
@@ -468,8 +519,44 @@ function renderOverlayFor(i) {
   ctx.setTransform(s, 0, 0, s, 0, 0);
   drawFormFields(ctx, page);
   drawObjects(ctx, page, i === state.current ? editingId : null);
+  drawDocOverlays(ctx, page, i);
   drawSearchHighlightsFor(ctx, i);
   if (i === state.current) drawSelection(ctx, page);
+}
+
+/** Live preview of the document watermark and page numbering/header. */
+function drawDocOverlays(ctx, page, index) {
+  const { w, h } = displayDims(page);
+  const wm = state.watermark;
+  if (wm.on && wm.text.trim()) {
+    ctx.save();
+    ctx.globalAlpha = wm.opacity;
+    ctx.fillStyle = wm.color;
+    ctx.font = `700 ${wm.size}px Helvetica, Arial, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate((-wm.angle * Math.PI) / 180);
+    ctx.fillText(wm.text, 0, 0);
+    ctx.restore();
+  }
+  const n = state.numbering;
+  if (n.on) {
+    ctx.save();
+    ctx.fillStyle = "#404040";
+    ctx.font = "10px Helvetica, Arial, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = n.pos === "left" ? "left" : n.pos === "right" ? "right" : "center";
+    const x = n.pos === "left" ? 28 : n.pos === "right" ? w - 28 : w / 2;
+    const num = (parseInt(n.start, 10) || 0) + index;
+    ctx.fillText(n.format.replace(/\{n\}/g, num).replace(/\{total\}/g, state.pages.length), x, h - 24);
+    if (n.header) ctx.fillText(n.header, x, 24);
+    ctx.restore();
+  }
+}
+
+function refreshAllOverlays() {
+  pageViews.forEach((_, i) => renderOverlayFor(i));
 }
 
 function renderOverlay() { renderOverlayFor(state.current); }
@@ -656,6 +743,11 @@ function drawObjects(ctx, page, skipId) {
       }
       case "whiteout": {
         ctx.fillStyle = "#ffffff";
+        ctx.fillRect(o.x, o.y, o.w, o.h);
+        break;
+      }
+      case "redact": {
+        ctx.fillStyle = "#000000";
         ctx.fillRect(o.x, o.y, o.w, o.h);
         break;
       }
@@ -896,6 +988,8 @@ function onOverlayPointerDown(e, pageIndex) {
     o = { id: uid(), type: "highlight", x, y, w: 0, h: 0, color: "#ffe066", opacity: HIGHLIGHT_OPACITY };
   } else if (state.tool === "whiteout") {
     o = { id: uid(), type: "whiteout", x, y, w: 0, h: 0 };
+  } else if (state.tool === "redact") {
+    o = { id: uid(), type: "redact", x, y, w: 0, h: 0 };
   } else if (state.tool === "line" || state.tool === "arrow") {
     o = { id: uid(), type: state.tool, x1: x, y1: y, x2: x, y2: y, color: props.color, sw: props.width, opacity: props.opacity };
   }
@@ -959,7 +1053,11 @@ function onOverlayPointerUp() {
       setTool("select");
       if (o.type === "whiteout" && page.src && !state.sources[page.src.s].unsupported && !whiteoutWarned) {
         whiteoutWarned = true;
-        toast("Heads-up: whiteout hides content visually, but the text underneath stays recoverable in the exported PDF. Don't rely on it for sensitive data.", { ms: 9000 });
+        toast("Heads-up: whiteout hides content visually, but the text underneath stays recoverable in the exported PDF. Use Redact to permanently remove sensitive content.", { ms: 9000 });
+      }
+      if (o.type === "redact" && !redactWarned) {
+        redactWarned = true;
+        toast("Redaction: on export this page is flattened to an image and the content under the box is permanently destroyed. Metadata is stripped too.", { ms: 9000 });
       }
     }
   } else if (drag.mode === "drawing") {
@@ -1097,7 +1195,9 @@ function openFieldEditor(page, f) {
   textEditor.style.lineHeight = "1.2";
   textEditor.style.color = "#111";
   textEditor.classList.remove("hidden");
-  setTimeout(() => textEditor.focus(), 0);
+  // The triggering pointerdown was preventDefault'd, so focus can be
+  // synchronous — deferring it races the first keystroke.
+  textEditor.focus();
 }
 
 function openChoiceEditor(page, f) {
@@ -1441,6 +1541,14 @@ async function bakeObjects(outDoc, outPage, page, fontCache, ovr) {
         outPage.drawRectangle({ x: box.x, y: box.y, width: box.w, height: box.h, color: rgb(1, 1, 1) });
         break;
       }
+      case "redact": {
+        // Solid black. On source pages this is reinforcement on top of the
+        // raster into which the region has already been burned; on blank
+        // pages it is the redaction itself.
+        const box = mapBox(o.x, o.y, o.w, o.h);
+        outPage.drawRectangle({ x: box.x, y: box.y, width: box.w, height: box.h, color: rgb(0, 0, 0) });
+        break;
+      }
       case "line":
       case "arrow": {
         drawSeg({ x: o.x1, y: o.y1 }, { x: o.x2, y: o.y2 }, o);
@@ -1580,8 +1688,14 @@ function stripWidgetAnnotations(outDoc, outPage) {
   }
 }
 
+function redactRectsOf(page) {
+  return page.objects.filter((o) => o.type === "redact");
+}
+
 /** Render a source page to a bitmap via pdf.js (which handles encrypted
-    documents) and place it as the full page background. */
+    documents) and place it as the full page background. Any redaction boxes
+    are burned into the bitmap here, so the original pixels beneath them are
+    destroyed and cannot be recovered from the exported file. */
 async function rasterizePageToPdf(outDoc, page) {
   const proxy = state.sources[page.src.s].proxies[page.src.p];
   const { w, h } = displayDims(page);
@@ -1594,11 +1708,110 @@ async function rasterizePageToPdf(outDoc, page) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, cv.width, cv.height);
   await proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS }).promise;
+  // Burn redactions into the raster (display coords -> canvas coords).
+  ctx.fillStyle = "#000000";
+  for (const o of redactRectsOf(page)) {
+    ctx.fillRect(o.x * scale, o.y * scale, o.w * scale, o.h * scale);
+  }
   const img = await outDoc.embedJpg(dataUrlToBytes(cv.toDataURL("image/jpeg", 0.92)));
   const outPage = outDoc.addPage([w, h]);
   outPage.drawImage(img, { x: 0, y: 0, width: w, height: h });
   // The bitmap already carries the rotation; treat the page as unrotated.
   return { outPage, ovr: { mapPt: (dx, dy) => [dx, h - dy], R: 0 } };
+}
+
+/** Metadata to write on export: user-provided values, or empty when the
+    user asked to strip or the document contains redactions. */
+function applyMetadata(outDoc, redacted) {
+  const m = state.metadata || {};
+  const strip = state.stripMetadata || redacted;
+  outDoc.setTitle(strip ? "" : (m.title || ""));
+  outDoc.setAuthor(strip ? "" : (m.author || ""));
+  outDoc.setSubject(strip ? "" : (m.subject || ""));
+  outDoc.setKeywords(strip ? [] : (m.keywords ? m.keywords.split(",").map((k) => k.trim()).filter(Boolean) : []));
+  outDoc.setProducer("PDFLover");
+  outDoc.setCreator("PDFLover");
+}
+
+/** Stamp the document watermark diagonally across a page. */
+async function bakeWatermark(outDoc, outPage, page, fontCache, ovr) {
+  const wm = state.watermark;
+  if (!wm.on || !wm.text.trim()) return;
+  const key = "Helvetica|1|0";
+  if (!fontCache.has(key)) fontCache.set(key, await outDoc.embedFont(standardFontFor("Helvetica", true, false)));
+  const font = fontCache.get(key);
+  const { width, height } = outPage.getSize();
+  const textW = font.widthOfTextAtSize(wm.text, wm.size);
+  // Center the rotated text on the page.
+  const rad = (wm.angle * Math.PI) / 180;
+  const cx = width / 2 - (textW / 2) * Math.cos(rad);
+  const cy = height / 2 - (textW / 2) * Math.sin(rad);
+  outPage.drawText(wm.text, {
+    x: cx, y: cy, size: wm.size, font,
+    color: hexToRgb(wm.color), opacity: wm.opacity, rotate: degrees(wm.angle),
+  });
+}
+
+/** Add page numbers / header / footer. Uses the output page geometry so it
+    lands correctly regardless of source rotation. */
+async function bakePageFurniture(outDoc, outPage, page, index, total, fontCache, ovr) {
+  const n = state.numbering;
+  if (!n.on) return;
+  const key = "Helvetica|0|0";
+  if (!fontCache.has(key)) fontCache.set(key, await outDoc.embedFont(StandardFonts.Helvetica));
+  const font = fontCache.get(key);
+  const { width, height } = outPage.getSize();
+  const size = 10;
+  const margin = 28;
+  const num = (parseInt(n.start, 10) || 0) + index;
+  const place = (text, y) => {
+    if (!text) return;
+    const t = sanitizeWinAnsi(text);
+    const tw = font.widthOfTextAtSize(t, size);
+    let x = width / 2 - tw / 2;
+    if (n.pos === "left") x = margin;
+    else if (n.pos === "right") x = width - margin - tw;
+    outPage.drawText(t, { x, y, size, font, color: rgb(0.25, 0.25, 0.25) });
+  };
+  place(n.format.replace(/\{n\}/g, num).replace(/\{total\}/g, total), margin - 10);
+  if (n.header) place(n.header, height - margin);
+}
+
+/** Write a flat (single-level) document outline / bookmarks tree into the
+    exported PDF. pdf-lib has no high-level outline API, so build the
+    dictionaries directly. */
+function writeOutline(outDoc, bookmarks) {
+  const items = bookmarks
+    .filter((b) => b.pageIndex >= 0 && b.pageIndex < outDoc.getPageCount())
+    .map((b) => ({ title: String(b.title || "Bookmark"), pageIndex: b.pageIndex }));
+  if (!items.length) return;
+  const ctx = outDoc.context;
+  const { PDFName, PDFNumber, PDFString, PDFArray, PDFDict } = PDFLib;
+  const pages = outDoc.getPages();
+
+  const outlinesRef = ctx.nextRef();
+  const itemRefs = items.map(() => ctx.nextRef());
+
+  items.forEach((item, i) => {
+    const dict = PDFDict.withContext(ctx);
+    dict.set(PDFName.of("Title"), PDFString.of(item.title));
+    dict.set(PDFName.of("Parent"), outlinesRef);
+    if (i > 0) dict.set(PDFName.of("Prev"), itemRefs[i - 1]);
+    if (i < items.length - 1) dict.set(PDFName.of("Next"), itemRefs[i + 1]);
+    const dest = PDFArray.withContext(ctx);
+    dest.push(pages[item.pageIndex].ref);
+    dest.push(PDFName.of("Fit"));
+    dict.set(PDFName.of("Dest"), dest);
+    ctx.assign(itemRefs[i], dict);
+  });
+
+  const outlines = PDFDict.withContext(ctx);
+  outlines.set(PDFName.of("Type"), PDFName.of("Outlines"));
+  outlines.set(PDFName.of("First"), itemRefs[0]);
+  outlines.set(PDFName.of("Last"), itemRefs[itemRefs.length - 1]);
+  outlines.set(PDFName.of("Count"), PDFNumber.of(items.length));
+  ctx.assign(outlinesRef, outlines);
+  outDoc.catalog.set(PDFName.of("Outlines"), outlinesRef);
 }
 
 async function buildPdf(pageList, opts = {}) {
@@ -1608,11 +1821,16 @@ async function buildPdf(pageList, opts = {}) {
   const fontCache = new Map();
   const libDocs = new Map();   // source index -> pdf-lib doc
 
+  let anyRedaction = false;
   for (const page of pageList) {
     let outPage;
     let ovr = null;
-    if (page.src && state.sources[page.src.s].unsupported) {
-      // pdf-lib cannot copy this document (usually encryption): rasterize.
+    const redacted = page.src && redactRectsOf(page).length > 0;
+    if (redacted) anyRedaction = true;
+    if (page.src && (state.sources[page.src.s].unsupported || redacted)) {
+      // Rasterize when pdf-lib can't copy the source (encryption) or when the
+      // page is redacted — rasterizing destroys the vector text so nothing
+      // survives beneath the burned-in black boxes.
       ({ outPage, ovr } = await rasterizePageToPdf(outDoc, page));
     } else if (page.src) {
       if (!libDocs.has(page.src.s)) {
@@ -1629,7 +1847,11 @@ async function buildPdf(pageList, opts = {}) {
     await bakeOcrText(outDoc, outPage, page, fontCache, ovr);
     await bakeFormFields(outDoc, outPage, page, fontCache, ovr);
     await bakeObjects(outDoc, outPage, page, fontCache, ovr);
+    await bakeWatermark(outDoc, outPage, page, fontCache, ovr);
+    await bakePageFurniture(outDoc, outPage, page, pageList.indexOf(page), pageList.length, fontCache, ovr);
   }
+  applyMetadata(outDoc, anyRedaction);
+  if (opts.outline && opts.outline.length) writeOutline(outDoc, opts.outline);
   if (opts.password) {
     // AES-128 encryption via the @cantoo/pdf-lib fork; same password unlocks
     // and grants full owner permissions.
@@ -1646,7 +1868,7 @@ async function exportPdf() {
   closeTextEditor(true);
   try {
     setStatus(state.exportPassword ? "Encrypting & exporting…" : "Exporting…");
-    const bytes = await buildPdf(state.pages, { password: state.exportPassword || null });
+    const bytes = await buildPdf(state.pages, { password: state.exportPassword || null, outline: state.bookmarks });
     const name = ($("docName").value.trim() || "document") + ".pdf";
     downloadBytes(bytes, name, "application/pdf");
     state.dirty = false;
@@ -2164,6 +2386,10 @@ async function saveSession() {
       pages: JSON.parse(JSON.stringify(state.pages)),
       formValues: { ...state.formValues },
       sources: state.sources.map((src) => src.bytes),
+      docSettings: {
+        metadata: state.metadata, stripMetadata: state.stripMetadata,
+        watermark: state.watermark, numbering: state.numbering, bookmarks: state.bookmarks,
+      },
     }, "current"));
   } catch (e) {
     console.warn("Autosave failed:", e.message);
@@ -2194,10 +2420,19 @@ async function restoreSession(data) {
   try {
     state.sources = [];
     state.formValues = {};
+    resetDocSettings();
     imageCache.clear();
     for (const bytes of data.sources) await addSource(new Uint8Array(bytes));
     state.pages = data.pages;
     if (data.formValues) state.formValues = data.formValues;
+    if (data.docSettings) {
+      const d = data.docSettings;
+      if (d.metadata) state.metadata = d.metadata;
+      state.stripMetadata = !!d.stripMetadata;
+      if (d.watermark) state.watermark = d.watermark;
+      if (d.numbering) state.numbering = d.numbering;
+      if (d.bookmarks) state.bookmarks = d.bookmarks;
+    }
     state.current = clamp(data.current || 0, 0, state.pages.length - 1);
     state.undoStack = [];
     state.redoStack = [];
@@ -2205,6 +2440,7 @@ async function restoreSession(data) {
     state.dirty = true;
     $("docName").value = data.docName || "restored";
     refreshAll();
+    renderBookmarks();
     toast("Session restored");
     scheduleAutosave();
   } catch (e) {
@@ -2497,6 +2733,148 @@ function wireElectron() {
   }
 }
 
+// ---------------------------------------------------------- bookmarks UI ----
+
+function renderBookmarks() {
+  const holder = $("bookmarks");
+  holder.innerHTML = "";
+  if (!state.bookmarks.length) {
+    holder.innerHTML = '<div class="bm-empty">No bookmarks yet. Add one for the current page.</div>';
+    return;
+  }
+  state.bookmarks.forEach((bm, i) => {
+    const item = document.createElement("div");
+    item.className = "bm-item";
+    const label = document.createElement("span");
+    label.className = "bm-label";
+    label.textContent = bm.title;
+    const pg = document.createElement("span");
+    pg.className = "bm-pg";
+    pg.textContent = "p" + (bm.pageIndex + 1);
+    const del = document.createElement("button");
+    del.className = "bm-del";
+    del.textContent = "✕";
+    del.title = "Delete bookmark";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.bookmarks.splice(i, 1);
+      state.dirty = true;
+      scheduleAutosave();
+      renderBookmarks();
+    });
+    item.appendChild(label);
+    item.appendChild(pg);
+    item.appendChild(del);
+    item.addEventListener("click", () => gotoPage(bm.pageIndex));
+    holder.appendChild(item);
+  });
+}
+
+function wireSideTabs() {
+  document.querySelectorAll(".side-tab").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".side-tab").forEach((x) => x.classList.toggle("active", x === b));
+    for (const id of ["thumbsPane", "bookmarksPane"]) $(id).classList.toggle("hidden", id !== b.dataset.sidepane);
+  }));
+}
+
+function wireBookmarks() {
+  $("bmAdd").addEventListener("click", () => {
+    $("bmTitle").value = "";
+    $("bmPageHint").textContent = `Bookmark will point to page ${state.current + 1}.`;
+    $("bmModal").classList.remove("hidden");
+    $("bmTitle").focus();
+  });
+  const save = () => {
+    const title = $("bmTitle").value.trim();
+    if (!title) return;
+    state.bookmarks.push({ title, pageIndex: state.current });
+    state.bookmarks.sort((a, b) => a.pageIndex - b.pageIndex);
+    state.dirty = true;
+    scheduleAutosave();
+    renderBookmarks();
+    $("bmModal").classList.add("hidden");
+  };
+  $("bmSave").addEventListener("click", save);
+  $("bmTitle").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+  });
+}
+
+// ----------------------------------------------------- document properties ----
+
+function wireDocument() {
+  document.querySelectorAll(".doc-tab").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".doc-tab").forEach((x) => x.classList.toggle("active", x === b));
+    for (const id of ["docMeta", "docWater", "docNum"]) $(id).classList.toggle("hidden", id !== b.dataset.doctab);
+  }));
+
+  const syncRange = (id, valId, suffix) => {
+    const el = $(id), out = $(valId);
+    const upd = () => { out.textContent = el.value + (suffix || ""); };
+    el.addEventListener("input", () => { upd(); applyDocLive(); });
+    return upd;
+  };
+  const updOpacity = syncRange("waterOpacity", "waterOpacityVal", "%");
+  const updAngle = syncRange("waterAngle", "waterAngleVal", "°");
+  const updSize = syncRange("waterSize", "waterSizeVal", "");
+
+  // Live-apply watermark/numbering as controls change so the preview updates.
+  for (const id of ["waterOn", "waterText", "waterColor", "numOn", "numFormat", "numHeader", "numPos", "numStart"]) {
+    $(id).addEventListener("input", applyDocLive);
+    $(id).addEventListener("change", applyDocLive);
+  }
+
+  $("btnDoc").addEventListener("click", () => {
+    const m = state.metadata;
+    $("metaTitle").value = m.title; $("metaAuthor").value = m.author;
+    $("metaSubject").value = m.subject; $("metaKeywords").value = m.keywords;
+    $("metaStrip").checked = state.stripMetadata;
+    const w = state.watermark;
+    $("waterOn").checked = w.on; $("waterText").value = w.text; $("waterColor").value = w.color;
+    $("waterOpacity").value = Math.round(w.opacity * 100); $("waterAngle").value = w.angle; $("waterSize").value = w.size;
+    updOpacity(); updAngle(); updSize();
+    const n = state.numbering;
+    $("numOn").checked = n.on; $("numFormat").value = n.format; $("numHeader").value = n.header;
+    $("numPos").value = n.pos; $("numStart").value = n.start;
+    $("docMsg").textContent = "";
+    $("docModal").classList.remove("hidden");
+  });
+
+  $("docApply").addEventListener("click", () => {
+    applyDocLive();
+    state.metadata = {
+      title: $("metaTitle").value, author: $("metaAuthor").value,
+      subject: $("metaSubject").value, keywords: $("metaKeywords").value,
+    };
+    state.stripMetadata = $("metaStrip").checked;
+    state.dirty = true;
+    scheduleAutosave();
+    $("docMsg").textContent = "Applied ✓";
+    setTimeout(() => $("docModal").classList.add("hidden"), 500);
+  });
+}
+
+/** Push watermark/numbering control values into state and refresh previews. */
+function applyDocLive() {
+  state.watermark = {
+    on: $("waterOn").checked,
+    text: $("waterText").value,
+    color: $("waterColor").value,
+    opacity: parseInt($("waterOpacity").value, 10) / 100,
+    angle: parseInt($("waterAngle").value, 10),
+    size: parseInt($("waterSize").value, 10),
+  };
+  state.numbering = {
+    on: $("numOn").checked,
+    format: $("numFormat").value,
+    header: $("numHeader").value,
+    pos: $("numPos").value,
+    start: parseInt($("numStart").value, 10) || 0,
+  };
+  refreshAllOverlays();
+}
+
 // --------------------------------------------------------------- wiring ----
 
 function confirmDiscard() {
@@ -2628,6 +3006,8 @@ function wireKeyboard() {
 
     const k = e.key.toLowerCase();
     if (e.key === "?") { $("helpModal").classList.toggle("hidden"); return; }
+    if (e.shiftKey && k === "r") { setTool("redact"); return; }
+    if (e.shiftKey) return;   // leave other Shift combos alone
     if (TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); return; }
     if (k === "i") { $("btnAddImage").click(); return; }
     if (k === "s") { $("btnSign").click(); return; }
@@ -2665,6 +3045,9 @@ window.addEventListener("DOMContentLoaded", () => {
   wireSignatures();
   wireSearch();
   wireLock();
+  wireSideTabs();
+  wireBookmarks();
+  wireDocument();
   if (typeof wireElectron === "function") wireElectron();
 
   // Ctrl+scroll zooms toward the page.
@@ -2689,5 +3072,6 @@ window.addEventListener("DOMContentLoaded", () => {
   setTool("select");
   newDocument("letter", "portrait");
   $("docName").value = "untitled";
+  renderBookmarks();
   tryOfferRestore();
 });

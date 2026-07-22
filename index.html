@@ -21,6 +21,7 @@
     <button id="btnInsert" class="tb-btn" title="Append pages from another PDF to this document">➕ Insert PDF</button>
     <button id="btnConvert" class="tb-btn" title="File conversion tools">🔁 Convert</button>
     <button id="btnOcr" class="tb-btn" title="Recognize text in scanned pages so they become searchable (OCR)">🅰 OCR</button>
+    <button id="btnDoc" class="tb-btn" title="Document properties: metadata, watermark, page numbers">⚙ Document</button>
   </div>
 
   <div class="topbar-group">
@@ -62,6 +63,7 @@
     <button class="tool" data-tool="line"      title="Line (L)">╱ <span>Line</span></button>
     <button class="tool" data-tool="arrow"     title="Arrow (A)">➔ <span>Arrow</span></button>
     <button class="tool" data-tool="whiteout"  title="Whiteout — cover existing content (W)">▉ <span>Whiteout</span></button>
+    <button class="tool" data-tool="redact"    title="Redact — permanently remove content under the box on export (Shift+R)">⬛ <span>Redact</span></button>
     <button class="tool-btn" id="btnAddImage"  title="Insert an image onto the page (I)">🖼 <span>Image</span></button>
     <button class="tool-btn" id="btnSign"      title="Place your signature (S)">✍️ <span>Sign</span></button>
   </div>
@@ -106,17 +108,29 @@
 
   <!-- Page sidebar -->
   <aside class="sidebar">
-    <div class="page-actions">
-      <button id="pgAdd"     title="Add blank page after current">＋</button>
-      <button id="pgDup"     title="Duplicate current page">⧉</button>
-      <button id="pgRotL"    title="Rotate page left">⟲</button>
-      <button id="pgRotR"    title="Rotate page right">⟳</button>
-      <button id="pgUp"      title="Move page up">▲</button>
-      <button id="pgDown"    title="Move page down">▼</button>
-      <button id="pgExtract" title="Export current page as its own PDF">⇱</button>
-      <button id="pgDelete"  title="Delete current page" class="danger">🗑</button>
+    <div class="side-tabs">
+      <button class="side-tab active" data-sidepane="thumbsPane" title="Page thumbnails">🗎 Pages</button>
+      <button class="side-tab" data-sidepane="bookmarksPane" title="Bookmarks / outline">🔖 Bookmarks</button>
     </div>
-    <div id="thumbs" class="thumbs"></div>
+    <div id="thumbsPane" class="side-pane">
+      <div class="page-actions">
+        <button id="pgAdd"     title="Add blank page after current">＋</button>
+        <button id="pgDup"     title="Duplicate current page">⧉</button>
+        <button id="pgRotL"    title="Rotate page left">⟲</button>
+        <button id="pgRotR"    title="Rotate page right">⟳</button>
+        <button id="pgUp"      title="Move page up">▲</button>
+        <button id="pgDown"    title="Move page down">▼</button>
+        <button id="pgExtract" title="Export current page as its own PDF">⇱</button>
+        <button id="pgDelete"  title="Delete current page" class="danger">🗑</button>
+      </div>
+      <div id="thumbs" class="thumbs"></div>
+    </div>
+    <div id="bookmarksPane" class="side-pane hidden">
+      <div class="bm-actions">
+        <button id="bmAdd" title="Add a bookmark to the current page">＋ Add bookmark</button>
+      </div>
+      <div id="bookmarks" class="bookmarks"></div>
+    </div>
   </aside>
 
   <!-- Viewer -->
@@ -290,6 +304,7 @@
       <table class="help-table">
         <tr><td><b>V T P H R E L A W</b></td><td>Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout</td></tr>
         <tr><td><b>X</b></td><td>Select &amp; copy text from the page</td></tr>
+        <tr><td><b>Shift+R</b></td><td>Redact (permanently remove content on export)</td></tr>
         <tr><td><b>I</b> / <b>S</b></td><td>Insert image / Place signature</td></tr>
         <tr><td><b>Ctrl+F</b></td><td>Find in document</td></tr>
         <tr><td><b>Ctrl+P</b></td><td>Print</td></tr>
@@ -302,6 +317,74 @@
         <tr><td><b>Ctrl+Scroll</b></td><td>Zoom</td></tr>
         <tr><td><b>?</b></td><td>This help</td></tr>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= DOCUMENT MODAL ======================= -->
+<div class="modal-backdrop hidden" id="docModal">
+  <div class="modal">
+    <div class="modal-head"><h2>⚙ Document properties</h2><button class="modal-close" data-close="docModal">✕</button></div>
+    <div class="modal-body">
+      <div class="sig-tabs">
+        <button class="doc-tab active" data-doctab="docMeta">Metadata</button>
+        <button class="doc-tab" data-doctab="docWater">Watermark</button>
+        <button class="doc-tab" data-doctab="docNum">Page numbers</button>
+      </div>
+
+      <div id="docMeta" class="doc-pane">
+        <label class="field"><span>Title</span><input type="text" id="metaTitle"></label>
+        <label class="field"><span>Author</span><input type="text" id="metaAuthor"></label>
+        <label class="field"><span>Subject</span><input type="text" id="metaSubject"></label>
+        <label class="field"><span>Keywords (comma-separated)</span><input type="text" id="metaKeywords"></label>
+        <label class="checkline"><input type="checkbox" id="metaStrip"> <span>Remove all metadata on export (recommended before sharing)</span></label>
+        <p class="hint">Metadata is always stripped automatically when a page contains redactions.</p>
+      </div>
+
+      <div id="docWater" class="doc-pane hidden">
+        <label class="checkline"><input type="checkbox" id="waterOn"> <span>Add a watermark to every page</span></label>
+        <label class="field"><span>Text</span><input type="text" id="waterText" placeholder="DRAFT" value="DRAFT"></label>
+        <div class="row2">
+          <label class="field"><span>Color</span><input type="color" id="waterColor" value="#e33d3d"></label>
+          <label class="field"><span>Opacity</span><input type="range" id="waterOpacity" min="5" max="80" value="18"><b id="waterOpacityVal">18%</b></label>
+        </div>
+        <div class="row2">
+          <label class="field"><span>Angle</span><input type="range" id="waterAngle" min="-90" max="90" value="45"><b id="waterAngleVal">45°</b></label>
+          <label class="field"><span>Size</span><input type="range" id="waterSize" min="20" max="160" value="72"><b id="waterSizeVal">72</b></label>
+        </div>
+      </div>
+
+      <div id="docNum" class="doc-pane hidden">
+        <label class="checkline"><input type="checkbox" id="numOn"> <span>Add page numbers / header / footer</span></label>
+        <label class="field"><span>Footer format</span>
+          <input type="text" id="numFormat" placeholder="Page {n} of {total}" value="Page {n} of {total}">
+        </label>
+        <p class="hint">Placeholders: <code>{n}</code> page number, <code>{total}</code> page count.</p>
+        <label class="field"><span>Header text (optional)</span><input type="text" id="numHeader" placeholder="Leave blank for none"></label>
+        <div class="row2">
+          <label class="field"><span>Position</span>
+            <select id="numPos"><option value="center">Center</option><option value="left">Left</option><option value="right">Right</option></select>
+          </label>
+          <label class="field"><span>Start at</span><input type="number" id="numStart" value="1" min="0" style="width:70px"></label>
+        </div>
+      </div>
+
+      <div class="conv-actions">
+        <button id="docApply" class="tb-btn primary">Apply</button>
+        <span class="hint" id="docMsg"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= BOOKMARK NAME MODAL ======================= -->
+<div class="modal-backdrop hidden" id="bmModal">
+  <div class="modal small">
+    <div class="modal-head"><h2>🔖 Add bookmark</h2><button class="modal-close" data-close="bmModal">✕</button></div>
+    <div class="modal-body">
+      <label class="field"><span>Bookmark title</span><input type="text" id="bmTitle" placeholder="Section name"></label>
+      <p class="hint" id="bmPageHint"></p>
+      <button id="bmSave" class="tb-btn primary wide">Add to page</button>
     </div>
   </div>
 </div>

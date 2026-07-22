@@ -151,7 +151,26 @@ async function addSource(bytes) {
     }
   }
 
-  state.sources.push({ bytes, pdfjs: doc, proxies, fields });
+  // Probe whether pdf-lib can rebuild this document. Encrypted PDFs (common
+  // for bank forms — they open without a password prompt) render fine in
+  // pdf.js but pdf-lib cannot copy their pages; those sources are exported
+  // as rendered page images instead.
+  let unsupported = false;
+  try {
+    const probe = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    probe.getPages();
+  } catch (e) {
+    unsupported = true;
+    console.warn("Source not editable by pdf-lib; will export as rendered pages:", e.message);
+  }
+
+  state.sources.push({ bytes, pdfjs: doc, proxies, fields, unsupported });
+
+  if (doc.isPureXfa) {
+    alert("This PDF is an XFA form (LiveCycle). XFA forms are not fully supported — pages may render incompletely.");
+  } else if (unsupported) {
+    setStatus("Protected PDF: exports will contain rendered page images (fills and edits still work)");
+  }
   return s;
 }
 
@@ -1118,10 +1137,12 @@ function updateThumbActive() {
 
 // --------------------------------------------------------------- export ----
 
-/** Bake one page's objects into a pdf-lib page. */
-async function bakeObjects(outDoc, outPage, page, fontCache) {
-  const mapPt = makePdfMapper(page);
-  const R = totalRot(page);
+/** Bake one page's objects into a pdf-lib page. `ovr` overrides the
+    coordinate mapper and effective rotation (used for rasterized pages,
+    where the rotation is already baked into the bitmap). */
+async function bakeObjects(outDoc, outPage, page, fontCache, ovr) {
+  const mapPt = ovr ? ovr.mapPt : makePdfMapper(page);
+  const R = ovr ? ovr.R : totalRot(page);
 
   const mapBox = (x, y, w, h) => {
     const [ax, ay] = mapPt(x, y);
@@ -1239,53 +1260,128 @@ async function imageBytesForRotation(o, R) {
 }
 
 /**
- * Write the user's field values into a source document's AcroForm, then
- * flatten it so values become permanent page content. Without flattening,
- * page-copying would orphan the widgets and values could vanish in other
- * viewers (form data lives in the document catalog, not the page tree).
+ * Bake a page's form fields (backgrounds, borders, and the user's values)
+ * directly into the output page — a manual "flatten". This mirrors the
+ * on-screen overlay drawing exactly and uses only pdf.js widget data, so it
+ * works even on documents whose AcroForm pdf-lib cannot parse. The original
+ * widget annotations are stripped separately.
  */
-async function applyAndFlattenForm(libDoc, sourceIndex) {
-  let fields;
-  try {
-    fields = libDoc.getForm().getFields();
-  } catch (e) {
-    return;   // no or malformed AcroForm
-  }
+async function bakeFormFields(outDoc, outPage, page, fontCache, ovr) {
+  const fields = pageFields(page);
   if (!fields.length) return;
-  const form = libDoc.getForm();
+  const mapPt = ovr ? ovr.mapPt : makePdfMapper(page);
+  const R = ovr ? ovr.R : totalRot(page);
+
+  const helvKey = "Helvetica|0|0";
+  if (!fontCache.has(helvKey)) fontCache.set(helvKey, await outDoc.embedFont(StandardFonts.Helvetica));
+  const font = fontCache.get(helvKey);
+
+  const mapBox = (x, y, w, h) => {
+    const [ax, ay] = mapPt(x, y);
+    const [bx, by] = mapPt(x + w, y + h);
+    return { x: Math.min(ax, bx), y: Math.min(ay, by), w: Math.abs(bx - ax), h: Math.abs(by - ay) };
+  };
+  const seg = (p1, p2, thickness, color) => {
+    const [x1, y1] = mapPt(p1.x, p1.y);
+    const [x2, y2] = mapPt(p2.x, p2.y);
+    outPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness, color, lineCap: LineCapStyle.Round });
+  };
+  const ink = rgb(0.07, 0.07, 0.07);
+
   for (const f of fields) {
-    const key = sourceIndex + ":" + f.getName();
-    if (!(key in state.formValues)) continue;
-    const v = state.formValues[key];
-    try {
-      if (f instanceof PDFLib.PDFTextField) f.setText(sanitizeWinAnsi(String(v ?? "")));
-      else if (f instanceof PDFLib.PDFCheckBox) v ? f.check() : f.uncheck();
-      else if (f instanceof PDFLib.PDFRadioGroup || f instanceof PDFLib.PDFDropdown || f instanceof PDFLib.PDFOptionList) {
-        if (v) {
-          // pdf.js reports the appearance-state name, which in some forms is
-          // an index into the option list rather than the option string.
-          const opts = f.getOptions();
-          let val = String(v);
-          if (!opts.includes(val) && /^\d+$/.test(val) && opts[+val] != null) val = opts[+val];
-          f.select(val);
-        }
+    const r = fieldDisplayRect(page, f);
+    const v = state.formValues[fieldKey(page, f)];
+    const box = mapBox(r.x, r.y, r.w, r.h);
+
+    if (f.bg) {
+      outPage.drawRectangle({ x: box.x, y: box.y, width: box.w, height: box.h, color: rgb(f.bg[0] / 255, f.bg[1] / 255, f.bg[2] / 255) });
+    }
+    if (f.border) {
+      outPage.drawRectangle({
+        x: box.x, y: box.y, width: box.w, height: box.h,
+        borderColor: rgb(f.border[0] / 255, f.border[1] / 255, f.border[2] / 255),
+        borderWidth: 1, opacity: 0, borderOpacity: 1,
+      });
+    }
+
+    if (f.type === "checkbox" || f.type === "radio") {
+      const checked = f.type === "checkbox" ? v === true : v === String(f.exportValue);
+      const s = Math.min(r.w, r.h);
+      const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+      if (f.type === "radio") {
+        const [px, py] = mapPt(cx, cy);
+        outPage.drawEllipse({
+          x: px, y: py, xScale: s * 0.38, yScale: s * 0.38,
+          borderColor: rgb(0.2, 0.2, 0.2), borderWidth: Math.max(1, s * 0.08),
+          opacity: 0, borderOpacity: 1,
+        });
+        if (checked) outPage.drawEllipse({ x: px, y: py, xScale: s * 0.2, yScale: s * 0.2, color: ink });
+      } else if (checked) {
+        const t = Math.max(1.5, s * 0.14);
+        seg({ x: r.x + r.w * 0.22, y: cy }, { x: cx - s * 0.05, y: r.y + r.h * 0.72 }, t, ink);
+        seg({ x: cx - s * 0.05, y: r.y + r.h * 0.72 }, { x: r.x + r.w * 0.8, y: r.y + r.h * 0.28 }, t, ink);
       }
-    } catch (e) {
-      console.warn(`Could not set form field "${f.getName()}":`, e.message);
+    } else {
+      const text = v != null ? String(v) : "";
+      if (!text) continue;
+      const fs = f.fontSize || Math.min(Math.max(r.h * 0.55, 7), 13);
+      const pad = 2.5;
+      const lines = f.multiLine ? text.split("\n") : [text.replace(/\n/g, " ")];
+      for (let i = 0; i < lines.length; i++) {
+        const line = sanitizeWinAnsi(lines[i]);
+        if (!line) continue;
+        const by = f.multiLine ? r.y + pad + (i + 0.85) * fs * 1.2 : r.y + r.h / 2 + fs * 0.36;
+        const [px, py] = mapPt(r.x + pad, by);
+        outPage.drawText(line, { x: px, y: py, size: fs, font, color: ink, rotate: degrees(R) });
+      }
     }
   }
+}
+
+/** Remove widget annotations from a copied page so stale field appearances
+    cannot shadow the baked values. Other annotations (e.g. links) stay. */
+function stripWidgetAnnotations(outDoc, outPage) {
   try {
-    form.updateFieldAppearances(await libDoc.embedFont(StandardFonts.Helvetica));
+    const annots = outPage.node.Annots();
+    if (!annots) return;
+    const widget = PDFLib.PDFName.of("Widget");
+    const keep = [];
+    for (let i = 0; i < annots.size(); i++) {
+      const ref = annots.get(i);
+      let subtype = null;
+      try {
+        const dict = outDoc.context.lookup(ref);
+        subtype = dict && dict.get && dict.get(PDFLib.PDFName.of("Subtype"));
+      } catch (e) { /* keep unknown annotations */ }
+      if (subtype && subtype === widget) continue;
+      if (subtype && subtype.toString && subtype.toString() === "/Widget") continue;
+      keep.push(ref);
+    }
+    outPage.node.set(PDFLib.PDFName.of("Annots"), outDoc.context.obj(keep));
   } catch (e) {
-    console.warn("updateFieldAppearances:", e.message);
+    console.warn("Could not strip widget annotations:", e.message);
   }
-  try {
-    form.flatten();
-  } catch (e) {
-    // Leave the widgets in place — their updated appearance streams still
-    // render in most viewers even when copying orphans the AcroForm.
-    console.warn("form.flatten failed; keeping widgets with updated appearances:", e.message);
-  }
+}
+
+/** Render a source page to a bitmap via pdf.js (which handles encrypted
+    documents) and place it as the full page background. */
+async function rasterizePageToPdf(outDoc, page) {
+  const proxy = state.sources[page.src.s].proxies[page.src.p];
+  const { w, h } = displayDims(page);
+  const scale = 2;   // 144 dpi
+  const vp = proxy.getViewport({ scale, rotation: totalRot(page) });
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(vp.width);
+  cv.height = Math.round(vp.height);
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  await proxy.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS }).promise;
+  const img = await outDoc.embedJpg(dataUrlToBytes(cv.toDataURL("image/jpeg", 0.92)));
+  const outPage = outDoc.addPage([w, h]);
+  outPage.drawImage(img, { x: 0, y: 0, width: w, height: h });
+  // The bitmap already carries the rotation; treat the page as unrotated.
+  return { outPage, ovr: { mapPt: (dx, dy) => [dx, h - dy], R: 0 } };
 }
 
 async function buildPdf(pageList) {
@@ -1297,20 +1393,24 @@ async function buildPdf(pageList) {
 
   for (const page of pageList) {
     let outPage;
-    if (page.src) {
+    let ovr = null;
+    if (page.src && state.sources[page.src.s].unsupported) {
+      // pdf-lib cannot copy this document (usually encryption): rasterize.
+      ({ outPage, ovr } = await rasterizePageToPdf(outDoc, page));
+    } else if (page.src) {
       if (!libDocs.has(page.src.s)) {
-        const libDoc = await PDFDocument.load(state.sources[page.src.s].bytes, { ignoreEncryption: true });
-        await applyAndFlattenForm(libDoc, page.src.s);
-        libDocs.set(page.src.s, libDoc);
+        libDocs.set(page.src.s, await PDFDocument.load(state.sources[page.src.s].bytes, { ignoreEncryption: true }));
       }
       const [copied] = await outDoc.copyPages(libDocs.get(page.src.s), [page.src.p]);
       outPage = outDoc.addPage(copied);
       outPage.setRotation(degrees(totalRot(page)));
+      stripWidgetAnnotations(outDoc, outPage);
     } else {
       outPage = outDoc.addPage([page.blank.w, page.blank.h]);
       if (page.rot) outPage.setRotation(degrees(page.rot));
     }
-    await bakeObjects(outDoc, outPage, page, fontCache);
+    await bakeFormFields(outDoc, outPage, page, fontCache, ovr);
+    await bakeObjects(outDoc, outPage, page, fontCache, ovr);
   }
   return outDoc.save();
 }

@@ -20,6 +20,7 @@
     <button id="btnOpen" class="tb-btn" title="Open a PDF for editing">📂 Open</button>
     <button id="btnInsert" class="tb-btn" title="Append pages from another PDF to this document">➕ Insert PDF</button>
     <button id="btnConvert" class="tb-btn" title="File conversion tools">🔁 Convert</button>
+    <button id="btnCompare" class="tb-btn" title="Compare two PDFs and highlight the differences">⇄ Compare</button>
     <button id="btnOcr" class="tb-btn" title="Recognize text in scanned pages so they become searchable (OCR)">🅰 OCR</button>
     <button id="btnDoc" class="tb-btn" title="Document properties: metadata, watermark, page numbers">⚙ Document</button>
   </div>
@@ -321,6 +322,27 @@
   </div>
 </div>
 
+<!-- ======================= COMPARE MODAL ======================= -->
+<div class="modal-backdrop hidden" id="compareModal">
+  <div class="modal wide-modal">
+    <div class="modal-head"><h2>⇄ Compare PDFs</h2><button class="modal-close" data-close="compareModal">✕</button></div>
+    <div class="modal-body">
+      <div class="cmp-inputs">
+        <label class="field"><span>Original (A)</span><input type="file" id="cmpFileA" accept="application/pdf"></label>
+        <label class="field"><span>Revised (B)</span><input type="file" id="cmpFileB" accept="application/pdf"></label>
+        <button id="cmpGo" class="tb-btn primary">Compare</button>
+      </div>
+      <p class="cmp-status" id="cmpStatus"></p>
+      <div id="cmpSummary" class="cmp-summary hidden"></div>
+      <div id="cmpResults" class="cmp-results"></div>
+      <div class="conv-actions" id="cmpExportWrap" style="display:none">
+        <button id="cmpExport" class="tb-btn">⬇ Download highlighted diff PDF</button>
+      </div>
+      <p class="privacy-note">🔒 Both files are compared locally in your browser — nothing is uploaded.</p>
+    </div>
+  </div>
+</div>
+
 <!-- ======================= DOCUMENT MODAL ======================= -->
 <div class="modal-backdrop hidden" id="docModal">
   <div class="modal">
@@ -427,5 +449,6 @@
 <script src="js/editor.js"></script>
 <script src="js/ocr.js"></script>
 <script src="js/converter.js"></script>
+<script src="js/compare.js"></script>
 </body>
 </html>

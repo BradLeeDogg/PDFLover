@@ -133,9 +133,27 @@ python3 -m http.server 8080
 
 ## Tech
 
-Plain HTML/CSS/JS. Libraries (vendored in `vendor/`, so it works offline):
+Plain HTML/CSS/JS — no framework, no build step. All libraries are vendored in
+`vendor/`, so the whole app works offline (and the desktop build ships them too):
 
 - [pdf.js](https://mozilla.github.io/pdf.js/) — page rendering & text extraction
-- [pdf-lib](https://pdf-lib.js.org/) — PDF creation, editing, and export
+- [@cantoo/pdf-lib](https://github.com/cantoo-scribe/pdf-lib) — PDF creation, editing, export, and AES encryption
+- [Tesseract.js](https://tesseract.projectnaptha.com/) — offline OCR (bundled English model)
+- [node-forge](https://github.com/digitalbazaar/forge) — PKCS#7 digital signatures
 - [JSZip](https://stuk.github.io/jszip/) — ZIP downloads for batch conversions
-- [pdf.js](https://mozilla.github.io/pdf.js/) — rendering; [Tesseract.js](https://tesseract.projectnaptha.com/) — OCR; [node-forge](https://github.com/digitalbazaar/forge) — PKCS#7 digital signatures
+- [Electron](https://www.electronjs.org/) + [electron-builder](https://www.electron.build/) — the desktop app
+
+## Project layout
+
+```
+index.html        markup + script/style includes
+css/styles.css    all styling
+js/utils.js       shared helpers (colour/font mapping, file IO, downloads)
+js/editor.js      editor core: rendering, object model, page ops, export
+js/ocr.js         Tesseract OCR + searchable-text baking
+js/converter.js   the six conversions + modal wiring
+js/compare.js     two-PDF visual + text diff
+js/sign.js        PKCS#7 signing and verification
+electron/         desktop shell (main process, preload, file association)
+vendor/           bundled libraries (offline)
+```

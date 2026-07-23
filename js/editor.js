@@ -28,6 +28,7 @@ const state = {
   watermark: { on: false, text: "DRAFT", color: "#e33d3d", opacity: 0.18, angle: 45, size: 72 },
   numbering: { on: false, format: "Page {n} of {total}", header: "", pos: "center", start: 1 },
   bookmarks: [],    // [{ title, pageIndex }]
+  signing: { on: false, name: "" },
 };
 
 // Defaults for newly created objects.
@@ -225,6 +226,7 @@ function resetDocSettings() {
   state.watermark = { on: false, text: "DRAFT", color: "#e33d3d", opacity: 0.18, angle: 45, size: 72 };
   state.numbering = { on: false, format: "Page {n} of {total}", header: "", pos: "center", start: 1 };
   state.bookmarks = [];
+  state.signing = { on: false, name: "" };
 }
 
 async function openPdfBytes(bytes, name) {
@@ -1852,6 +1854,14 @@ async function buildPdf(pageList, opts = {}) {
   }
   applyMetadata(outDoc, anyRedaction);
   if (opts.outline && opts.outline.length) writeOutline(outDoc, opts.outline);
+
+  if (opts.sign && window.pdfSign) {
+    // Signing needs stable byte offsets and a findable signature dict, so
+    // save uncompressed, then splice the PKCS#7 blob into the placeholder.
+    window.pdfSign.addSignaturePlaceholder(outDoc, opts.sign.name, "Signed with PDFLover");
+    const raw = await outDoc.save({ useObjectStreams: false });
+    return window.pdfSign.signPdfBytes(raw, opts.sign.identity);
+  }
   if (opts.password) {
     // AES-128 encryption via the @cantoo/pdf-lib fork; same password unlocks
     // and grants full owner permissions.
@@ -1867,14 +1877,30 @@ async function buildPdf(pageList, opts = {}) {
 async function exportPdf() {
   closeTextEditor(true);
   try {
-    setStatus(state.exportPassword ? "Encrypting & exporting…" : "Exporting…");
-    const bytes = await buildPdf(state.pages, { password: state.exportPassword || null, outline: state.bookmarks });
+    const sign = state.signing.on && state.signing.name.trim() && window.pdfSign;
+    let signOpt = null;
+    if (sign) {
+      if (state.exportPassword) {
+        toast("Password protection is ignored when digitally signing (they can't be combined).", { ms: 6000 });
+      }
+      setStatus("Generating signing identity…");
+      const identity = window.pdfSign.getSigningIdentity(state.signing.name.trim());
+      signOpt = { name: state.signing.name.trim(), identity };
+    }
+    setStatus(sign ? "Signing & exporting…" : (state.exportPassword ? "Encrypting & exporting…" : "Exporting…"));
+    const bytes = await buildPdf(state.pages, {
+      password: sign ? null : (state.exportPassword || null),
+      outline: state.bookmarks,
+      sign: signOpt,
+    });
     const name = ($("docName").value.trim() || "document") + ".pdf";
     downloadBytes(bytes, name, "application/pdf");
     state.dirty = false;
     scheduleAutosave();
     setStatus(`Exported ${name} (${state.pages.length} page(s))`);
-    toast(state.exportPassword ? `Exported ${name} 🔒 (password-protected)` : `Exported ${name}`);
+    toast(sign ? `Exported ${name} ✍️ (digitally signed)`
+        : state.exportPassword ? `Exported ${name} 🔒 (password-protected)`
+        : `Exported ${name}`);
   } catch (e) {
     console.error(e);
     setStatus("Export failed: " + e.message, true);
@@ -2389,6 +2415,7 @@ async function saveSession() {
       docSettings: {
         metadata: state.metadata, stripMetadata: state.stripMetadata,
         watermark: state.watermark, numbering: state.numbering, bookmarks: state.bookmarks,
+        signing: state.signing,
       },
     }, "current"));
   } catch (e) {
@@ -2432,6 +2459,7 @@ async function restoreSession(data) {
       if (d.watermark) state.watermark = d.watermark;
       if (d.numbering) state.numbering = d.numbering;
       if (d.bookmarks) state.bookmarks = d.bookmarks;
+      if (d.signing) state.signing = d.signing;
     }
     state.current = clamp(data.current || 0, 0, state.pages.length - 1);
     state.undoStack = [];
@@ -2806,7 +2834,7 @@ function wireBookmarks() {
 function wireDocument() {
   document.querySelectorAll(".doc-tab").forEach((b) => b.addEventListener("click", () => {
     document.querySelectorAll(".doc-tab").forEach((x) => x.classList.toggle("active", x === b));
-    for (const id of ["docMeta", "docWater", "docNum"]) $(id).classList.toggle("hidden", id !== b.dataset.doctab);
+    for (const id of ["docMeta", "docWater", "docNum", "docSign"]) $(id).classList.toggle("hidden", id !== b.dataset.doctab);
   }));
 
   const syncRange = (id, valId, suffix) => {
@@ -2837,6 +2865,9 @@ function wireDocument() {
     const n = state.numbering;
     $("numOn").checked = n.on; $("numFormat").value = n.format; $("numHeader").value = n.header;
     $("numPos").value = n.pos; $("numStart").value = n.start;
+    $("signOn").checked = state.signing.on;
+    $("signName").value = state.signing.name;
+    $("sigVerifyResult").textContent = "";
     $("docMsg").textContent = "";
     $("docModal").classList.remove("hidden");
   });
@@ -2848,6 +2879,7 @@ function wireDocument() {
       subject: $("metaSubject").value, keywords: $("metaKeywords").value,
     };
     state.stripMetadata = $("metaStrip").checked;
+    state.signing = { on: $("signOn").checked, name: $("signName").value.trim() };
     state.dirty = true;
     scheduleAutosave();
     $("docMsg").textContent = "Applied ✓";

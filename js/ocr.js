@@ -122,9 +122,14 @@ async function bakeOcrText(outDoc, outPage, page, fontCache, ovr) {
   const helvKey = "Helvetica|0|0";
   if (!fontCache.has(helvKey)) fontCache.set(helvKey, await outDoc.embedFont(StandardFonts.Helvetica));
   const font = fontCache.get(helvKey);
+  // Never re-emit recognized text that falls under a redaction box.
+  const redactions = page.objects.filter((o) => o.type === "redact");
+  const underRedaction = (word) => redactions.some((r) =>
+    word.x < r.x + r.w && word.x + word.w > r.x && word.y < r.y + r.h && word.y + word.h > r.y);
   for (const word of words) {
     const text = sanitizeWinAnsi(word.t);
     if (!text) continue;
+    if (underRedaction(word)) continue;
     const size = clamp(word.h * 0.95, 4, 72);
     const [px, py] = mapPt(word.x, word.y + word.h * 0.8);
     outPage.drawText(text, { x: px, y: py, size, font, opacity: 0, rotate: degrees(R) });

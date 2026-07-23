@@ -352,6 +352,7 @@
         <button class="doc-tab active" data-doctab="docMeta">Metadata</button>
         <button class="doc-tab" data-doctab="docWater">Watermark</button>
         <button class="doc-tab" data-doctab="docNum">Page numbers</button>
+        <button class="doc-tab" data-doctab="docSign">Digital signature</button>
       </div>
 
       <div id="docMeta" class="doc-pane">
@@ -389,6 +390,17 @@
           </label>
           <label class="field"><span>Start at</span><input type="number" id="numStart" value="1" min="0" style="width:70px"></label>
         </div>
+      </div>
+
+      <div id="docSign" class="doc-pane hidden">
+        <label class="checkline"><input type="checkbox" id="signOn"> <span>Digitally sign the exported PDF</span></label>
+        <label class="field"><span>Signer name</span><input type="text" id="signName" placeholder="Your name"></label>
+        <p class="hint">Creates a standards-compliant PKCS#7 signature (Adobe-recognizable). The identity is <b>self-signed</b> and stored on this device, so viewers show “signed, identity not trusted” — but any change to the document after signing is detected. Signing and password protection can't be combined.</p>
+        <hr class="sig-sep">
+        <p class="hint"><b>Verify a signed PDF</b></p>
+        <input type="file" id="sigVerifyFile" accept="application/pdf">
+        <div class="conv-actions"><button id="sigVerifyGo" class="tb-btn">Verify signature</button></div>
+        <p class="sig-verify-result" id="sigVerifyResult"></p>
       </div>
 
       <div class="conv-actions">
@@ -445,10 +457,12 @@
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
 <script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="vendor/forge.min.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/editor.js"></script>
 <script src="js/ocr.js"></script>
 <script src="js/converter.js"></script>
 <script src="js/compare.js"></script>
+<script src="js/sign.js"></script>
 </body>
 </html>

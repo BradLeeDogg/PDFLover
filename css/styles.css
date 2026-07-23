@@ -488,6 +488,11 @@ body { display: flex; flex-direction: column; }
 .row2 .field { flex: 1; min-width: 120px; }
 .doc-pane input[type="range"] { accent-color: var(--accent); }
 .doc-pane code { background: var(--bg3); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.sig-sep { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
+.sig-verify-result { font-size: 13px; min-height: 18px; color: var(--text-dim); }
+.sig-verify-result.good { color: #7dd97d; }
+.sig-verify-result.bad { color: #ff8598; }
+.sig-verify-result.warn { color: #ffb454; }
 
 /* ---------- Help table ---------- */
 .help-table { border-collapse: collapse; width: 100%; font-size: 13px; }

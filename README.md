@@ -86,6 +86,7 @@ python3 -m http.server 8080
 - **Watermark** every page (text, color, angle, opacity) with a live preview
 - **Page numbers, headers & footers** with `{n}` / `{total}` placeholders and a start value
 - **Bookmarks / outline**: view and jump to an imported PDF's outline, add your own, and they're written into the exported PDF
+- **Digitally sign** exports with a standards-compliant PKCS#7 signature (Adobe-recognizable); a self-signed identity is created locally so any change after signing is detected. Built-in **Verify** checks a signed PDF's integrity and reports the signer
 
 ### 🛟 Quality of life
 - **Drag & drop** PDFs or images anywhere onto the window to open/place them
@@ -135,3 +136,4 @@ Plain HTML/CSS/JS. Libraries (vendored in `vendor/`, so it works offline):
 - [pdf.js](https://mozilla.github.io/pdf.js/) — page rendering & text extraction
 - [pdf-lib](https://pdf-lib.js.org/) — PDF creation, editing, and export
 - [JSZip](https://stuk.github.io/jszip/) — ZIP downloads for batch conversions
+- [pdf.js](https://mozilla.github.io/pdf.js/) — rendering; [Tesseract.js](https://tesseract.projectnaptha.com/) — OCR; [node-forge](https://github.com/digitalbazaar/forge) — PKCS#7 digital signatures

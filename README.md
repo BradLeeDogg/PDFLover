@@ -48,6 +48,7 @@ python3 -m http.server 8080
 
 ### ✏️ Edit imported PDFs
 - Open any PDF and edit it page by page
+- **Edit Text** — click a line of existing PDF text to retype it in place; PDFLover matches the original's position, size, font style, and colour and covers the original (`Shift+E`)
 - **Text** — click anywhere to type; Helvetica / Times / Courier, bold, italic, any size & color
 - **Draw** — freehand pen with adjustable color and stroke width
 - **Highlight** — translucent multiply-blended highlighter
@@ -117,6 +118,7 @@ python3 -m http.server 8080
 | `V` `T` `P` `H` `R` `E` `L` `A` `W` | Select / Text / Pen / Highlight / Rect / Ellipse / Line / Arrow / Whiteout |
 | `X` | Select & copy text from the page |
 | `Shift+R` | Redact (permanently remove on export) |
+| `Shift+E` | Edit existing text |
 | `I` / `S` | Insert image / Place signature |
 | `Ctrl+F` | Find in document |
 | `Ctrl+P` | Print |

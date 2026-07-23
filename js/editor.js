@@ -58,6 +58,7 @@ let thumbSeq = 0;
 let editingId = null;       // text object currently being edited
 let whiteoutWarned = false; // one-time whiteout privacy note per session
 let redactWarned = false;   // one-time redaction explainer per session
+let editTextWarned = false; // one-time edit-text explainer per session
 let drag = null;            // active pointer interaction
 let propSnap = null;        // pending undo snapshot for slider-style edits
 const imageCache = new Map();      // dataUrl -> HTMLImageElement
@@ -446,9 +447,10 @@ async function buildTextLayer(i) {
   layer.innerHTML = "";
 
   const entries = [];   // {x,y,w,h,str} in display coords (scale 1)
-  // Don't expose text that sits under a redaction box for selection/copy.
-  const redactions = page.objects.filter((o) => o.type === "redact");
-  const hidden = (x, y, bw, bh) => redactions.some((r) =>
+  // Don't expose text that sits under a redaction box or a replaced-text
+  // cover for selection/copy.
+  const covers = page.objects.filter((o) => o.type === "redact" || o.type === "edittext");
+  const hidden = (x, y, bw, bh) => covers.some((r) =>
     x < r.x + r.w && x + bw > r.x && y < r.y + r.h && y + bh > r.y);
   const items = await getPageTextItems(page);
   if (v.textKey !== key) return;   // superseded while awaiting
@@ -699,6 +701,22 @@ function drawObjects(ctx, page, skipId) {
     if (o.id === skipId) continue;
     ctx.save();
     switch (o.type) {
+      case "edittext": {
+        // Cover the original text with the sampled background colour, then
+        // draw the replacement on top.
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = o.bg || "#ffffff";
+        ctx.fillRect(o.x, o.y, o.w, o.h);
+        if (o.id === skipId) break;   // being edited; the textarea shows it
+        ctx.globalAlpha = o.opacity != null ? o.opacity : 1;
+        ctx.fillStyle = o.color;
+        ctx.font = fontString(o);
+        ctx.textBaseline = "alphabetic";
+        o.text.split("\n").forEach((line, i) => {
+          ctx.fillText(line, o.x + 1, o.y + i * o.size * 1.25 + o.size * 0.82);
+        });
+        break;
+      }
       case "text": {
         ctx.globalAlpha = o.opacity;
         ctx.fillStyle = o.color;
@@ -973,6 +991,13 @@ function onOverlayPointerDown(e, pageIndex) {
     return;
   }
 
+  if (state.tool === "edittext") {
+    e.preventDefault();
+    drag = null;
+    startEditExistingText(page, pageIndex, x, y, snap);
+    return;
+  }
+
   if (state.tool === "draw") {
     const o = { id: uid(), type: "draw", points: [{ x, y }], color: props.color, sw: props.width, opacity: props.opacity };
     page.objects.push(o);
@@ -1079,7 +1104,7 @@ function onOverlayDblClick(e) {
   if (!page) return;
   const { x, y } = eventPoint(e);
   const hit = hitObject(page, x, y);
-  if (hit && hit.type === "text") {
+  if (hit && (hit.type === "text" || hit.type === "edittext")) {
     state.selId = hit.id;
     openTextEditor(hit, snapshot());
   }
@@ -1258,7 +1283,15 @@ function closeTextEditor(commit) {
   textEditor.classList.add("hidden");
   if (!o) return;
   if (commit) o.text = textEditor.value.replace(/\r/g, "");
-  if (!o.text.trim()) {
+  if (o.type === "edittext") {
+    // An edittext keeps its cover box even when emptied (it still hides the
+    // original). Fit the box width to the new text so it doesn't clip.
+    measureCtx.font = fontString(o);
+    let tw = 0;
+    for (const line of o.text.split("\n")) tw = Math.max(tw, measureCtx.measureText(line).width);
+    o.w = Math.max(o.w, tw + 4);
+    if (snap) pushSnap(snap);
+  } else if (!o.text.trim()) {
     page.objects = page.objects.filter((x) => x.id !== o.id);
     if (state.selId === o.id) state.selId = null;
   } else {
@@ -1268,6 +1301,83 @@ function closeTextEditor(commit) {
   renderOverlay();
   scheduleThumb();
   updatePropsPanel();
+}
+
+// ------------------------------------------------- edit existing text ----
+
+/** Sample the rendered page canvas within a display-space rect to estimate
+    the ink colour (darkest) and background colour (brightest). */
+function samplePageColors(pageIndex, rect) {
+  const v = pageViews[pageIndex];
+  const fallback = { text: "#000000", bg: "#ffffff" };
+  if (!v || !v.canvas.width) return fallback;
+  const dpr = window.devicePixelRatio || 1;
+  const s = state.zoom * dpr;
+  const x0 = Math.max(0, Math.floor(rect.x * s));
+  const y0 = Math.max(0, Math.floor(rect.y * s));
+  const w = Math.min(v.canvas.width - x0, Math.ceil(rect.w * s));
+  const h = Math.min(v.canvas.height - y0, Math.ceil(rect.h * s));
+  if (w <= 0 || h <= 0) return fallback;
+  let data;
+  try { data = v.canvas.getContext("2d").getImageData(x0, y0, w, h).data; }
+  catch (e) { return fallback; }
+  let dMin = 1e9, dR = 0, dG = 0, dB = 0, bMax = -1, bR = 255, bG = 255, bB = 255;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const lum = 0.3 * r + 0.59 * g + 0.11 * b;
+    if (lum < dMin) { dMin = lum; dR = r; dG = g; dB = b; }
+    if (lum > bMax) { bMax = lum; bR = r; bG = g; bB = b; }
+  }
+  const hex = (r, g, b) => "#" + [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("");
+  return { text: hex(dR, dG, dB), bg: hex(bR, bG, bB) };
+}
+
+/** Map a pdf.js font style to one of the three standard families + flags. */
+function detectFont(item, styles) {
+  const st = styles && styles[item.fontName];
+  const fam = ((st && st.fontFamily) || item.fontName || "").toLowerCase();
+  let font = "Helvetica";
+  if (/times|georgia|serif/.test(fam) && !/sans/.test(fam)) font = "Times";
+  else if (/mono|courier|consol/.test(fam)) font = "Courier";
+  const bold = /bold|black|heavy|semibold/.test(fam);
+  const italic = /italic|oblique/.test(fam);
+  return { font, bold, italic };
+}
+
+async function startEditExistingText(page, pageIndex, x, y, snap) {
+  if (!page.src) { toast("Edit Text works on text from an imported PDF."); return; }
+  const tc = await getPageTextContent(page);
+  if (!tc || !tc.items.length) { toast("No editable text found on this page (it may be scanned — try OCR)."); return; }
+  const proxy = state.sources[page.src.s].proxies[page.src.p];
+  const vp = proxy.getViewport({ scale: 1, rotation: totalRot(page) });
+
+  let hit = null, hitRect = null;
+  for (const it of tc.items) {
+    if (!it.str || !it.str.trim()) continue;
+    const r = itemDisplayRect(vp, it);
+    const pad = 2;
+    if (x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad) {
+      hit = it; hitRect = r; break;
+    }
+  }
+  if (!hit) { toast("Click directly on a line of text to edit it."); return; }
+
+  const { font, bold, italic } = detectFont(hit, tc.styles);
+  const size = Math.max(6, Math.hypot(hit.transform[1], hit.transform[3]) || hitRect.h);
+  const colors = samplePageColors(pageIndex, hitRect);
+  const o = {
+    id: uid(), type: "edittext",
+    x: hitRect.x - 1, y: hitRect.y - 1, w: hitRect.w + 3, h: hitRect.h + 2,
+    text: hit.str, size, font, bold, italic,
+    color: colors.text, bg: colors.bg, opacity: 1,
+  };
+  page.objects.push(o);
+  state.selId = o.id;
+  openTextEditor(o, snap);
+  if (!editTextWarned) {
+    editTextWarned = true;
+    toast("Editing covers the original text and writes your replacement over it in a matched font. The original stays extractable unless you also Redact — use Redact for sensitive changes.", { ms: 9000 });
+  }
 }
 
 textEditor.addEventListener("input", () => {
@@ -1487,6 +1597,20 @@ async function bakeObjects(outDoc, outPage, page, fontCache, ovr) {
 
   for (const o of page.objects) {
     switch (o.type) {
+      case "edittext": {
+        // Cover the original, then draw the replacement.
+        const box = mapBox(o.x, o.y, o.w, o.h);
+        outPage.drawRectangle({ x: box.x, y: box.y, width: box.w, height: box.h, color: hexToRgb(o.bg || "#ffffff") });
+        const font = await getFont(o);
+        const lines = o.text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const text = sanitizeWinAnsi(lines[i]);
+          if (!text) continue;
+          const [bx, by] = mapPt(o.x + 1, o.y + i * o.size * 1.25 + o.size * 0.82);
+          outPage.drawText(text, { x: bx, y: by, size: o.size, font, color: hexToRgb(o.color), rotate: degrees(R) });
+        }
+        break;
+      }
       case "text": {
         const font = await getFont(o);
         const lh = o.size * 1.25;
@@ -1927,6 +2051,7 @@ async function extractCurrentPage() {
 
 const PROP_VISIBILITY = {
   text: ["propColorWrap", "propSizeWrap", "propFontWrap", "propStyleWrap", "propOpacityWrap"],
+  edittext: ["propColorWrap", "propSizeWrap", "propFontWrap", "propStyleWrap"],
   draw: ["propColorWrap", "propWidthWrap", "propOpacityWrap"],
   line: ["propColorWrap", "propWidthWrap", "propOpacityWrap"],
   arrow: ["propColorWrap", "propWidthWrap", "propOpacityWrap"],
@@ -2151,15 +2276,20 @@ function toast(msg, opts = {}) {
 
 const search = { query: "", matches: [], cur: -1 };   // matches: {pageIndex, rects}
 
-async function getPageTextItems(page) {
+async function getPageTextContent(page) {
   if (!page.src) return null;
   const src = state.sources[page.src.s];
   if (!src.textCache) src.textCache = new Map();
   if (!src.textCache.has(page.src.p)) {
     const tc = await src.proxies[page.src.p].getTextContent();
-    src.textCache.set(page.src.p, tc.items);
+    src.textCache.set(page.src.p, { items: tc.items, styles: tc.styles || {} });
   }
   return src.textCache.get(page.src.p);
+}
+
+async function getPageTextItems(page) {
+  const tc = await getPageTextContent(page);
+  return tc ? tc.items : null;
 }
 
 function itemDisplayRect(vp, item) {
@@ -3039,6 +3169,7 @@ function wireKeyboard() {
     const k = e.key.toLowerCase();
     if (e.key === "?") { $("helpModal").classList.toggle("hidden"); return; }
     if (e.shiftKey && k === "r") { setTool("redact"); return; }
+    if (e.shiftKey && k === "e") { setTool("edittext"); return; }
     if (e.shiftKey) return;   // leave other Shift combos alone
     if (TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); return; }
     if (k === "i") { $("btnAddImage").click(); return; }

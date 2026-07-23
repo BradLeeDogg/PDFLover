@@ -280,6 +280,7 @@ body { display: flex; flex-direction: column; }
 #pageColumn[data-tool="arrow"]     .overlay-canvas { cursor: crosshair; }
 #pageColumn[data-tool="whiteout"]  .overlay-canvas { cursor: crosshair; }
 #pageColumn[data-tool="redact"]    .overlay-canvas { cursor: crosshair; }
+#pageColumn[data-tool="edittext"]  .overlay-canvas { cursor: text; }
 
 #textEditor {
   position: absolute;

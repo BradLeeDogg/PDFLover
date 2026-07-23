@@ -94,6 +94,11 @@ python3 -m http.server 8080
 - `Ctrl+scroll` to zoom; toast notifications for important events
 - A safety note when using whiteout on original content (the text underneath remains recoverable in exports from unprotected PDFs)
 
+### ⇄ Compare
+- Compare two PDFs and see the differences per page: a visual pixel diff (green = added, red = removed) and a word-level text diff
+- Reports pages changed and total words added/removed; download a highlighted diff PDF
+- Runs entirely locally — neither file is uploaded
+
 ### 🔁 Convert
 | Conversion | Details |
 |---|---|
